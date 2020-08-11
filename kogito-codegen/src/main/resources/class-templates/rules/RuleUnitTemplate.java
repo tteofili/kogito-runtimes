@@ -6,10 +6,6 @@ import org.kie.kogito.rules.units.impl.AbstractRuleUnit;
 
 public class $Name$ extends AbstractRuleUnit<$ModelName$> {
 
-    public $Name$() {
-        this(new $Application$());
-    }
-
     public $Name$(org.kie.kogito.Application app) {
         super(app);
     }
@@ -20,7 +16,7 @@ public class $Name$ extends AbstractRuleUnit<$ModelName$> {
 
     private KieSession createLegacySession() {
         KieSession ks = app.ruleUnits().ruleRuntimeBuilder().newKieSession( $ModelClass$ );
-        ((org.drools.core.impl.StatefulKnowledgeSessionImpl)ks).setApplication( app );
+        ((org.drools.core.impl.KogitoStatefulKnowledgeSessionImpl)ks).setApplication( app );
         if (app.config() != null && app.config().rule() != null) {
             RuleEventListenerConfig ruleEventListenerConfig = app.config().rule().ruleEventListeners();
             ruleEventListenerConfig.agendaListeners().forEach(ks::addEventListener);

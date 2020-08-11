@@ -18,18 +18,36 @@ package org.kie.kogito.integrationtests.springboot;
 
 import io.restassured.RestAssured;
 import io.restassured.http.ContentType;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.kie.kogito.testcontainers.springboot.InfinispanSpringBootTestResource;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.web.server.LocalServerPort;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.test.context.ContextConfiguration;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.Matchers.emptyOrNullString;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, classes = KogitoSpringbootApplication.class)
+@ExtendWith(SpringExtension.class)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, classes = KogitoSpringbootApplication.class)
+@ContextConfiguration(initializers = InfinispanSpringBootTestResource.Conditional.class)
 class ManagementAddOnTest {
 
     static {
         RestAssured.enableLoggingOfRequestAndResponseIfValidationFails();
+    }
+
+    @LocalServerPort
+    int randomServerPort;
+
+    @BeforeEach
+    void setPort() {
+        RestAssured.port = randomServerPort;
     }
 
     @Test
@@ -60,5 +78,50 @@ class ManagementAddOnTest {
                 .body("[9].name", is("BoundaryEvent"))
                 .body("[9].type", is("BoundaryEventNode"))
                 .body("[9].uniqueId", is("10"));
+    }
+
+    @Test
+    void testAbortProcessInstance() {
+        String pid = given()
+                .contentType(ContentType.JSON)
+                .when()
+                .post("/greetings")
+                .then()
+                .statusCode(200)
+                .body("id", not(emptyOrNullString()))
+                .body("test", emptyOrNullString())
+                .extract().path("id");
+
+        given()
+                .contentType(ContentType.JSON)
+                .when()
+                .delete("/management/processes/{processId}/instances/{processInstanceId}", "greetings", pid)
+                .then()
+                .statusCode(200);
+    }
+
+    @Test
+    void testGetNodeInstances() {
+        String pid = given()
+                .contentType(ContentType.JSON)
+                .when()
+                .post("/greetings")
+                .then()
+                .statusCode(200)
+                .body("id", not(emptyOrNullString()))
+                .body("test", emptyOrNullString())
+                .extract().path("id");
+
+        given()
+                .contentType(ContentType.JSON)
+                .when()
+                .get("/management/processes/{processId}/instances/{processInstanceId}/nodeInstances", "greetings", pid)
+                .then()
+                .statusCode(200)
+                .body("$.size", is(2))
+                .body("[0].name", is("Task"))
+                .body("[0].state", is(0))
+                .body("[1].name", is("Task"))
+                .body("[1].state", is(0));
     }
 }

@@ -21,13 +21,16 @@ import java.util.stream.Collectors;
 
 import org.infinispan.client.hotrod.RemoteCache;
 import org.infinispan.client.hotrod.RemoteCacheManager;
-import org.infinispan.protostream.MessageMarshaller;
+import org.infinispan.protostream.BaseMarshaller;
 import org.kie.kogito.process.MutableProcessInstances;
 import org.kie.kogito.process.Process;
 import org.kie.kogito.process.ProcessInstance;
 import org.kie.kogito.process.ProcessInstanceDuplicatedException;
+import org.kie.kogito.process.ProcessInstanceReadMode;
 import org.kie.kogito.process.impl.AbstractProcessInstance;
 import org.kie.kogito.process.impl.marshalling.ProcessInstanceMarshaller;
+
+import static org.kie.kogito.process.ProcessInstanceReadMode.MUTABLE;
 
 @SuppressWarnings({"rawtypes"})
 public class CacheProcessInstances implements MutableProcessInstances {
@@ -36,27 +39,36 @@ public class CacheProcessInstances implements MutableProcessInstances {
     private ProcessInstanceMarshaller marshaller;
     private org.kie.kogito.process.Process<?> process;
 
-    public CacheProcessInstances(Process<?> process, RemoteCacheManager cacheManager, String templateName, String proto, MessageMarshaller<?>... marshallers) {
+    public CacheProcessInstances(Process<?> process, RemoteCacheManager cacheManager, String templateName, String proto, BaseMarshaller<?>... marshallers) {
         this.process = process;
         this.cache = cacheManager.administration().getOrCreateCache(process.id() + "_store", ignoreNullOrEmpty(templateName));
         this.marshaller = new ProcessInstanceMarshaller(new ProtoStreamObjectMarshallingStrategy(proto, marshallers));
     }
 
     @Override
-    public Optional<? extends ProcessInstance> findById(String id) {
+    public Integer size() {
+        return cache.size();
+    }
+
+    @Override
+    public Optional<? extends ProcessInstance> findById(String id, ProcessInstanceReadMode mode) {
         byte[] data = cache.get(resolveId(id));
         if (data == null) {
             return Optional.empty();
         }
 
-        return Optional.of(marshaller.unmarshallProcessInstance(data, process));
+        return Optional.of(mode == MUTABLE ?
+                                   marshaller.unmarshallProcessInstance(data, process) :
+                                   marshaller.unmarshallReadOnlyProcessInstance(data, process));
     }
 
     @Override
-    public Collection<? extends ProcessInstance> values() {
+    public Collection<? extends ProcessInstance> values(ProcessInstanceReadMode mode) {
         return cache.values()
                 .parallelStream()
-                .map(data -> marshaller.unmarshallProcessInstance(data, process))
+                .map(data -> mode == MUTABLE ?
+                        marshaller.unmarshallProcessInstance(data, process) :
+                        marshaller.unmarshallReadOnlyProcessInstance(data, process))
                 .collect(Collectors.toList());
     }
 
