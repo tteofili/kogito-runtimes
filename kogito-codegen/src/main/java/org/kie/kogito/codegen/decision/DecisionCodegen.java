@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
@@ -58,6 +59,7 @@ import org.kie.kogito.codegen.ConfigGenerator;
 import org.kie.kogito.codegen.GeneratedFile;
 import org.kie.kogito.codegen.decision.config.DecisionConfigGenerator;
 import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
+import org.kie.kogito.codegen.io.CollectedResource;
 import org.kie.kogito.grafana.GrafanaConfigurationWriter;
 
 import static java.util.stream.Collectors.toList;
@@ -70,6 +72,15 @@ public class DecisionCodegen extends AbstractGenerator {
 
     public static String STRONGLY_TYPED_CONFIGURATION_KEY = "kogito.decisions.stronglytyped";
 
+    public static DecisionCodegen ofCollectedResources(Collection<CollectedResource> resources) {
+        List<DMNResource> dmnResources = resources.stream()
+                .filter(r -> r.resource().getResourceType() == ResourceType.DMN)
+                .flatMap(r -> parseDecisions(r.basePath(), Collections.singletonList(r.resource())).stream())
+                .collect(toList());
+        return ofDecisions(dmnResources);
+    }
+
+    @Deprecated
     public static DecisionCodegen ofJar(Path... jarPaths) throws IOException {
         List<DMNResource> dmnResources = new ArrayList<>();
 
@@ -141,6 +152,7 @@ public class DecisionCodegen extends AbstractGenerator {
     private final List<DMNResource> resources;
     private final List<GeneratedFile> generatedFiles = new ArrayList<>();
     private AddonsConfig addonsConfig = AddonsConfig.DEFAULT;
+    private ClassLoader projectClassLoader;
 
     public DecisionCodegen(List<DMNResource> resources) {
         this.resources = resources;
@@ -234,10 +246,25 @@ public class DecisionCodegen extends AbstractGenerator {
             DMNTypeSafePackageName.Factory factory = m -> new DMNTypeSafePackageName("", m.getNamespace(), "");
             DMNAllTypesIndex index = new DMNAllTypesIndex(factory, model);
 
-            Map<String, String> allTypesSourceCode = new DMNTypeSafeTypeGenerator(
-                    model,
-                    index, factory)
-                    .withJacksonAnnotation()
+            DMNTypeSafeTypeGenerator generator = new DMNTypeSafeTypeGenerator(model, index, factory).withJacksonAnnotation();
+            boolean useMPAnnotations = false;
+            if (projectClassLoader != null) {
+                try {
+                    Class<?> loadedOpenAPI = projectClassLoader.loadClass("org.eclipse.microprofile.openapi.models.OpenAPI");
+                    if (loadedOpenAPI != null) {
+                        useMPAnnotations = true;
+                    }
+                } catch (Exception e) {
+                    // do nothing.
+                }
+            }
+            if (useMPAnnotations) {
+                logger.debug("useMPAnnotations");
+                generator.withMPAnnotation();
+            } else {
+                logger.debug("NO useMPAnnotations");
+            }
+            Map<String, String> allTypesSourceCode = generator
                     .processTypes()
                     .generateSourceCodeOfAllTypes();
 
@@ -286,6 +313,11 @@ public class DecisionCodegen extends AbstractGenerator {
     public DecisionCodegen withAddons(AddonsConfig addonsConfig) {
         this.decisionContainerGenerator.withAddons(addonsConfig);
         this.addonsConfig = addonsConfig;
+        return this;
+    }
+
+    public DecisionCodegen withClassLoader(ClassLoader projectClassLoader) {
+        this.projectClassLoader = projectClassLoader;
         return this;
     }
 }

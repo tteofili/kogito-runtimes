@@ -14,29 +14,32 @@ public class $Type$Resource {
     @Path("/{id}/$taskName$")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    public javax.ws.rs.core.Response signal(@PathParam("id") final String id) {
+    public Response signal(@PathParam("id") final String id, @Context UriInfo uriInfo) {
         return UnitOfWorkExecutor.executeInUnitOfWork(application.unitOfWorkManager(), () -> {
             return process
-                          .instances()
-                          .findById(id)
-                          .map(pi -> {
-                              pi.send(Sig.of("$taskNodeName$", java.util.Collections.emptyMap()));
-                              java.util.Optional<WorkItem> task =
-                                      pi.workItems().stream().filter(wi -> wi.getName().equals("$taskName$"))
-                                        .findFirst();
-                              if (task.isPresent()) {
-                                  return Response.ok(pi.variables().toOutput())
-                                                 .header("Link", "</" + id + "/$taskName$/" + task.get().getId() +
-                                                                 ">; rel='instance'")
-                                                 .build();
-                              }
-                              return Response.status(Response.Status.NOT_FOUND).build();
-                          })
-                          .orElse(null);
+                .instances()
+                .findById(id)
+                .map(pi -> {
+                    pi.send(Sig.of("$taskNodeName$", java.util.Collections.emptyMap()));
+                    java.util.Optional<WorkItem> task =
+                            pi
+                                .workItems()
+                                .stream()
+                                .filter(wi -> wi.getName().equals("$taskName$"))
+                                .findFirst();
+                    if (task.isPresent()) {
+                        return Response
+                                .created(uriInfo.getAbsolutePathBuilder().path(task.get().getId()).build())
+                                .entity(pi.variables().toOutput())
+                            .build();
+                    }
+                    return Response.status(Response.Status.NOT_FOUND).build();
+                })
+                .orElseThrow(() -> new NotFoundException());
         });
     }
 
-    @POST()
+    @POST
     @Path("/{id}/$taskName$/{workItemId}")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
@@ -46,22 +49,23 @@ public class $Type$Resource {
                                      @QueryParam("user") final String user,
                                      @QueryParam("group") final List<String> groups,
                                      final $TaskOutput$ model) {
-        return UnitOfWorkExecutor.executeInUnitOfWork(application.unitOfWorkManager(),
-                                                      () -> process
-                                                                   .instances()
-                                                                   .findById(id)
-                                                                   .map(pi -> {
-                                                                       pi.transitionWorkItem(workItemId,
-                                                                                             HumanTaskTransition.withModel(phase,
-                                                                                                                           model,
-                                                                                                                           policies(user,
-                                                                                                                                    groups)));
-                                                                       return pi.variables().toOutput();
-                                                                   })
-                                                                   .orElse(null));
+        return UnitOfWorkExecutor
+            .executeInUnitOfWork(
+                application.unitOfWorkManager(),
+                () -> process
+                    .instances()
+                    .findById(id)
+                    .map(pi -> {
+                        pi
+                            .transitionWorkItem(
+                                workItemId,
+                                HumanTaskTransition.withModel(phase, model, Policies.of(user, groups)));
+                        return pi.variables().toOutput();
+                    })
+                    .orElseThrow(() -> new NotFoundException()));
     }
 
-    @GET()
+    @GET
     @Path("/{id}/$taskName$/{workItemId}")
     @Produces(MediaType.APPLICATION_JSON)
     public $TaskInput$ getTask(@PathParam("id") String id,
@@ -70,30 +74,35 @@ public class $Type$Resource {
                                @QueryParam("group") final List<String> groups) {
         return process.instances()
                       .findById(id, ProcessInstanceReadMode.READ_ONLY)
-                      .map(pi -> $TaskInput$.from(pi.workItem(workItemId, policies(user, groups))))
-                      .orElse(null);
+                      .map(pi -> $TaskInput$.from(pi.workItem(workItemId, Policies.of(user, groups))))
+                      .orElseThrow(() -> new NotFoundException());
     }
 
-    @GET()
+    @GET
     @Path("$taskName$/schema")
     @Produces(MediaType.APPLICATION_JSON)
     public Map<String, Object> getSchema() {
         return JsonSchemaUtil.load(this.getClass().getClassLoader(), process.id(), "$taskName$");
     }
 
-    @GET()
+    @GET
     @Path("/{id}/$taskName$/{workItemId}/schema")
     @Produces(MediaType.APPLICATION_JSON)
     public Map<String, Object> getSchemaAndPhases(@PathParam("id") final String id,
                                                   @PathParam("workItemId") final String workItemId,
                                                   @QueryParam("user") final String user,
                                                   @QueryParam("group") final List<String> groups) {
-        return JsonSchemaUtil.addPhases(process, application, id, workItemId, policies(user, groups),
-                                        JsonSchemaUtil.load(this.getClass().getClassLoader(), process.id(),
-                                                            "$taskName$"));
+        return JsonSchemaUtil
+            .addPhases(
+                process,
+                application,
+                id,
+                workItemId,
+                Policies.of(user, groups),
+                JsonSchemaUtil.load(this.getClass().getClassLoader(), process.id(), "$taskName$"));
     }
 
-    @DELETE()
+    @DELETE
     @Path("/{id}/$taskName$/{workItemId}")
     @Produces(MediaType.APPLICATION_JSON)
     public $Type$Output abortTask(@PathParam("id") final String id,
@@ -108,10 +117,9 @@ public class $Type$Resource {
                                                                    .map(pi -> {
                                                                        pi.transitionWorkItem(workItemId,
                                                                                              HumanTaskTransition.withoutModel(phase,
-                                                                                                                              policies(user,
-                                                                                                                                       groups)));
+                                                                                                     Policies.of(user, groups)));
                                                                        return pi.variables().toOutput();
                                                                    })
-                                                                   .orElse(null));
+                                                                   .orElseThrow(() -> new NotFoundException()));
     }
 }

@@ -16,25 +16,41 @@
 
 package org.kie.kogito.tracing.decision.event;
 
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import io.cloudevents.json.Json;
 import org.kie.dmn.api.core.DMNMessage;
 import org.kie.dmn.api.core.DMNModel;
 import org.kie.dmn.api.core.DMNType;
 import org.kie.dmn.api.feel.runtime.events.FEELEvent;
-import org.kie.kogito.tracing.decision.event.common.InternalMessageType;
-import org.kie.kogito.tracing.decision.event.common.Message;
-import org.kie.kogito.tracing.decision.event.common.MessageCategory;
-import org.kie.kogito.tracing.decision.event.common.MessageExceptionField;
-import org.kie.kogito.tracing.decision.event.common.MessageFEELEvent;
-import org.kie.kogito.tracing.decision.event.common.MessageFEELEventSeverity;
-import org.kie.kogito.tracing.decision.event.common.MessageLevel;
+import org.kie.dmn.feel.lang.Type;
+import org.kie.dmn.feel.lang.types.BuiltInType;
+import org.kie.kogito.tracing.decision.event.message.InternalMessageType;
+import org.kie.kogito.tracing.decision.event.message.Message;
+import org.kie.kogito.tracing.decision.event.message.MessageCategory;
+import org.kie.kogito.tracing.decision.event.message.MessageExceptionField;
+import org.kie.kogito.tracing.decision.event.message.MessageFEELEvent;
+import org.kie.kogito.tracing.decision.event.message.MessageFEELEventSeverity;
+import org.kie.kogito.tracing.decision.event.message.MessageLevel;
 import org.kie.kogito.tracing.decision.event.trace.TraceResourceId;
-import org.kie.kogito.tracing.decision.event.trace.TraceType;
+import org.kie.kogito.tracing.typedvalue.CollectionValue;
+import org.kie.kogito.tracing.typedvalue.StructureValue;
+import org.kie.kogito.tracing.typedvalue.TypedValue;
+import org.kie.kogito.tracing.typedvalue.UnitValue;
 
 public class EventUtils {
+
+    public static JsonNode jsonNodeFrom(Object object) {
+        return Optional.ofNullable(object).<JsonNode>map(Json.MAPPER::valueToTree).orElse(null);
+    }
 
     public static <I, O> List<O> map(List<I> input, Function<I, O> mapper) {
         return input == null
@@ -141,16 +157,90 @@ public class EventUtils {
         }
     }
 
-    public static TraceResourceId traceResourceIdFrom(DMNModel model) {
+    public static <T> Stream<T> streamFrom(Iterator<T> iterator) {
+        Iterable<T> iterable = () -> iterator;
+        return StreamSupport.stream(iterable.spliterator(), false);
+    }
+
+    public static TraceResourceId traceResourceIdFrom(String serviceUrl, DMNModel model) {
         if (model == null) {
             return null;
         }
-        return new TraceResourceId(model.getNamespace(), model.getName());
+        return new TraceResourceId(serviceUrl, model.getNamespace(), model.getName());
     }
 
-    public static TraceType traceTypeFrom(DMNType dmnType) {
-        return new TraceType(dmnType.getId(), dmnType.getNamespace(), dmnType.getName());
+    public static TypedValue typedValueFrom(Object value) {
+        return typedValueFromJsonNode(jsonNodeFrom(value), BuiltInType.determineTypeFromInstance(value));
     }
 
-    private EventUtils() {}
+    public static TypedValue typedValueFrom(DMNType type, Object value) {
+        return typedValueFromJsonNode(type, jsonNodeFrom(value), BuiltInType.determineTypeFromInstance(value));
+    }
+
+    static TypedValue typedValueFromJsonNode(JsonNode value, Type suggestedType) {
+        if (value != null && value.isObject()) {
+            return new StructureValue(
+                    typeOf(value).getName(),
+                    streamFrom(value.fields())
+                            .collect(HashMap::new, (map, entry) -> map.put(entry.getKey(), typedValueFromJsonNode(entry.getValue(), null)), HashMap::putAll)
+            );
+        }
+        if (value != null && value.isArray()) {
+            return new CollectionValue(
+                    typeOf(value).getName(),
+                    streamFrom(value.elements()).map(v -> typedValueFromJsonNode(v, null)).collect(Collectors.toList())
+            );
+        }
+        Type finalType = Optional.ofNullable(suggestedType).orElseGet(() -> typeOf(value));
+        return new UnitValue(finalType.getName(), value);
+    }
+
+    static TypedValue typedValueFromJsonNode(DMNType type, JsonNode value, Type suggestedType) {
+        if (type == null) {
+            return typedValueFromJsonNode(value, suggestedType);
+        }
+        if (value != null && value.isObject()) {
+            return new StructureValue(
+                    type.getName(),
+                    streamFrom(value.fields())
+                            .collect(HashMap::new, (map, entry) -> map.put(entry.getKey(), typedValueFromJsonNode(type.getFields().get(entry.getKey()), entry.getValue(), null)), HashMap::putAll)
+            );
+        }
+        if (value != null && value.isArray()) {
+            return new CollectionValue(
+                    type.getName(),
+                    streamFrom(value.elements()).map(element -> typedValueFromJsonNode(type, element, null)).collect(Collectors.toList())
+            );
+        }
+        return new UnitValue(type.getName(), baseTypeOf(type), value);
+    }
+
+    static String baseTypeOf(DMNType type) {
+        if (type == null || type.getBaseType() == null) {
+            return null;
+        }
+        return type.getBaseType().getId() == null ? type.getBaseType().getName() : baseTypeOf(type.getBaseType());
+    }
+
+    static Type typeOf(JsonNode value) {
+        if (value == null) {
+            return BuiltInType.UNKNOWN;
+        }
+        if (value.isArray()) {
+            return BuiltInType.LIST;
+        }
+        if (value.isBoolean()) {
+            return BuiltInType.BOOLEAN;
+        }
+        if (value.isNumber()) {
+            return BuiltInType.NUMBER;
+        }
+        if (value.isTextual()) {
+            return BuiltInType.STRING;
+        }
+        return BuiltInType.UNKNOWN;
+    }
+
+    private EventUtils() {
+    }
 }
