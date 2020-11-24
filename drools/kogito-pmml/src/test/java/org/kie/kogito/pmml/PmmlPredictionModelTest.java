@@ -1,3 +1,17 @@
+/*
+ * Copyright 2020 Red Hat, Inc. and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.kie.kogito.pmml;
 
 import java.util.Collections;
@@ -12,9 +26,11 @@ import org.junit.jupiter.api.Test;
 import org.kie.api.pmml.PMML4Result;
 import org.kie.api.pmml.PMMLRequestData;
 import org.kie.api.pmml.ParameterInfo;
-import org.kie.pmml.commons.model.KiePMMLModel;
-import org.kie.pmml.evaluator.api.executor.PMMLContext;
-import org.kie.pmml.evaluator.api.executor.PMMLRuntime;
+import org.kie.pmml.api.models.MiningField;
+import org.kie.pmml.api.models.OutputField;
+import org.kie.pmml.api.models.PMMLModel;
+import org.kie.pmml.api.runtime.PMMLContext;
+import org.kie.pmml.api.runtime.PMMLRuntime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -24,7 +40,7 @@ class PmmlPredictionModelTest {
 
     private static final PMML4Result  PMML_4_RESULT = new PMML4Result();
     private final static String MODEL_NAME = "MODEL_NAME";
-    private final static KiePMMLModel KIE_PMML_MODEL = getKiePMMLModelInternal(MODEL_NAME);
+    private final static PMMLModel PMML_MODEL = new PMMLModelInternal(MODEL_NAME);
     private final static PMMLRuntime PMML_RUNTIME = getPMMLRuntime();
 
     private static PmmlPredictionModel pmmlPredictionModel;
@@ -63,7 +79,7 @@ class PmmlPredictionModelTest {
 
     @Test
     void getKiePMMLModel() {
-        assertEquals(KIE_PMML_MODEL, pmmlPredictionModel.getKiePMMLModel());
+        assertEquals(PMML_MODEL, pmmlPredictionModel.getPMMLModel());
     }
 
     private Map<String, Object> getParameters() {
@@ -77,15 +93,15 @@ class PmmlPredictionModelTest {
     private static PMMLRuntime getPMMLRuntime() {
         return new PMMLRuntime() {
 
-            private final List<KiePMMLModel> models = Collections.singletonList(KIE_PMML_MODEL);
+            private final List<PMMLModel> models = Collections.singletonList(PMML_MODEL);
 
             @Override
-            public List<KiePMMLModel> getModels() {
+            public List<PMMLModel> getPMMLModels() {
                 return models;
             }
 
             @Override
-            public Optional<KiePMMLModel> getModel(String s) {
+            public Optional<PMMLModel> getPMMLModel(String s) {
                 return models.stream().filter(model -> model.getName().equals(s)).findFirst();
             }
 
@@ -93,16 +109,34 @@ class PmmlPredictionModelTest {
             public PMML4Result evaluate(String s, PMMLContext pmmlContext) {
                 return PMML_4_RESULT;
             }
+
         };
     }
 
-    private static KiePMMLModel getKiePMMLModelInternal(String modelName) {
-        return new KiePMMLModel(modelName, Collections.emptyList()) {
+    private static class PMMLModelInternal implements PMMLModel {
 
-            @Override
-            public Object evaluate(Object o, Map<String, Object> map) {
-                return null;
-            }
-        };
+        private final String name;
+        private final List<MiningField> miningFields = Collections.emptyList();
+        private final List<OutputField> outputFields = Collections.emptyList();
+
+        public PMMLModelInternal(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public List<MiningField> getMiningFields() {
+            return miningFields;
+        }
+
+        @Override
+        public List<OutputField> getOutputFields() {
+            return outputFields;
+        }
     }
+
 }

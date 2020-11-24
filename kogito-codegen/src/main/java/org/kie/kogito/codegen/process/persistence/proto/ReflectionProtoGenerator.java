@@ -23,27 +23,27 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
 import org.infinispan.protostream.annotations.ProtoEnumValue;
 import org.kie.internal.kogito.codegen.Generated;
 import org.kie.internal.kogito.codegen.VariableInfo;
+import org.kie.kogito.codegen.GeneratedFile;
 
-public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
+public class ReflectionProtoGenerator extends AbstractProtoGenerator<Class<?>> {
 
     public Proto generate(String packageName, Collection<Class<?>> dataModel, String... headers) {
         try {
             Proto proto = new Proto(packageName, headers);
             for (Class<?> clazz : dataModel) {
-                if(clazz.isEnum()) {
+                if (clazz.isEnum()) {
                     enumFromClass(proto, clazz, null);
                 } else {
                     messageFromClass(proto, clazz, null, null, null);
@@ -54,13 +54,12 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
             throw new RuntimeException("Error while generating proto for data model", e);
         }
     }
-    
 
     @Override
     public Proto generate(String messageComment, String fieldComment, String packageName, Class<?> dataModel, String... headers) {
         try {
             Proto proto = new Proto(packageName, headers);
-            if(dataModel.isEnum()) {
+            if (dataModel.isEnum()) {
                 enumFromClass(proto, dataModel, null);
             } else {
                 messageFromClass(proto, dataModel, packageName, messageComment, fieldComment);
@@ -71,15 +70,16 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
         }
     }
 
-    public Collection<Class<?>> extractDataClasses(Collection<Class<?>> input, String targetDirectory) {
-
+    public ProtoDataClassesResult<Class<?>> extractDataClasses(Collection<Class<?>> input, String targetDirectory) {
         Set<Class<?>> dataModelClasses = new HashSet<>();
-        for (Class<?> modelClazz : input) {
-            try {
+        List<GeneratedFile> generatedFiles = new ArrayList<>();
+        try {
+            for (Class<?> modelClazz : input) {
+
                 BeanInfo beanInfo = Introspector.getBeanInfo(modelClazz);
                 for (PropertyDescriptor pd : beanInfo.getPropertyDescriptors()) {
                     Class<?> propertyType = pd.getPropertyType();
-                    if (propertyType.getCanonicalName().startsWith("java.lang") 
+                    if (propertyType.getCanonicalName().startsWith("java.lang")
                             || propertyType.getCanonicalName().equals(Date.class.getCanonicalName())) {
                         continue;
                     }
@@ -87,19 +87,20 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
                     dataModelClasses.add(propertyType);
                 }
 
-                generateModelClassProto(modelClazz, targetDirectory);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+                generateModelClassProto(modelClazz, targetDirectory).ifPresent(generatedFiles::add);
             }
+            this.generateProtoListingFile(generatedFiles).ifPresent(generatedFiles::add);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
 
-        return dataModelClasses;
+        return new ProtoDataClassesResult<>(dataModelClasses, generatedFiles);
     }
 
     protected ProtoMessage messageFromClass(Proto proto, Class<?> clazz, String packageName, String messageComment, String fieldComment) throws Exception {
         BeanInfo beanInfo = Introspector.getBeanInfo(clazz);
         String name = beanInfo.getBeanDescriptor().getBeanClass().getSimpleName();
-        
+
         Generated generatedData = clazz.getAnnotation(Generated.class);
         if (generatedData != null) {
             name = generatedData.name().isEmpty() ? name : generatedData.name();
@@ -108,7 +109,7 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
                 return null;
             }
         }
-        
+
         ProtoMessage message = new ProtoMessage(name, packageName == null ? clazz.getPackage().getName() : packageName);
 
         for (PropertyDescriptor pd : beanInfo.getPropertyDescriptors()) {
@@ -121,12 +122,12 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
             if (Modifier.isStatic(mod) || Modifier.isTransient(mod)) {
                 continue;
             }
-            
+
             VariableInfo varInfo = clazz.getDeclaredField(pd.getName()).getAnnotation(VariableInfo.class);
             if (varInfo != null) {
                 completeFieldComment = fieldComment + "\n @VariableInfo(tags=\"" + varInfo.tags() + "\")";
             }
-            
+
             String fieldTypeString = pd.getPropertyType().getCanonicalName();
             Class<?> fieldType = pd.getPropertyType();
             String protoType;
@@ -184,10 +185,10 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
     private void addEnumField(Field field, ProtoEnum pEnum) {
         ProtoEnumValue protoEnumValue = field.getAnnotation(ProtoEnumValue.class);
         Integer ordinal = null;
-        if(protoEnumValue != null) {
+        if (protoEnumValue != null) {
             ordinal = protoEnumValue.number();
         }
-        if(ordinal == null) {
+        if (ordinal == null) {
             ordinal = pEnum.getFields()
                     .values()
                     .stream()
@@ -197,31 +198,28 @@ public class ReflectionProtoGenerator implements ProtoGenerator<Class<?>> {
         }
         pEnum.addField(field.getName(), ordinal);
     }
-    
-    protected void generateModelClassProto(Class<?> modelClazz, String targetDirectory) throws Exception {
+
+    protected Optional<GeneratedFile> generateModelClassProto(Class<?> modelClazz, String targetDirectory) throws Exception {
 
         Generated generatedData = modelClazz.getAnnotation(Generated.class);
         if (generatedData != null) {
 
-            String processId = generatedData.reference();            
+            String processId = generatedData.reference();
             Proto modelProto = generate("@Indexed",
                                         INDEX_COMMENT,
-                                        modelClazz.getPackage().getName() + "." + processId, modelClazz, "import \"kogito-index.proto\";",                                        
-                                        "import \"kogito-types.proto\";", 
-                                        "option kogito_model = \"" + generatedData.name() +"\";", 
-                                        "option kogito_id = \"" + processId +"\";");
+                                        modelClazz.getPackage().getName() + "." + processId, modelClazz, "import \"kogito-index.proto\";",
+                                        "import \"kogito-types.proto\";",
+                                        "option kogito_model = \"" + generatedData.name() + "\";",
+                                        "option kogito_id = \"" + processId + "\";");
             if (modelProto.getMessages().isEmpty()) {
                 // no messages, nothing to do
-                return;
+                return Optional.empty();
             }
             ProtoMessage modelMessage = modelProto.getMessages().stream().filter(msg -> msg.getName().equals(generatedData.name())).findFirst().orElseThrow(() -> new IllegalStateException("Unable to find model message"));
             modelMessage.addField("optional", "org.kie.kogito.index.model.KogitoMetadata", "metadata").setComment(INDEX_COMMENT);
-            
-            Path protoFilePath = Paths.get(targetDirectory, "classes", "/persistence/" + processId + ".proto");
 
-            Files.createDirectories(protoFilePath.getParent());
-            Files.write(protoFilePath, modelProto.toString().getBytes(StandardCharsets.UTF_8));
+            return Optional.of(generateProtoFiles(processId, targetDirectory, modelProto));
         }
+        return Optional.empty();
     }
-
 }

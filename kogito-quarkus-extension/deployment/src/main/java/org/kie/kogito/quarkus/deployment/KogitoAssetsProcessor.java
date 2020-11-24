@@ -21,16 +21,19 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.inject.Inject;
 
@@ -46,12 +49,10 @@ import io.quarkus.deployment.builditem.LiveReloadBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.NativeImageResourceBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveHierarchyIgnoreWarningBuildItem;
-import io.quarkus.deployment.builditem.nativeimage.RuntimeInitializedClassBuildItem;
 import io.quarkus.deployment.index.IndexingUtil;
 import io.quarkus.deployment.pkg.builditem.CurateOutcomeBuildItem;
 import org.drools.compiler.builder.impl.KogitoKieModuleModelImpl;
 import org.drools.compiler.compiler.io.memory.MemoryFileSystem;
-import org.drools.core.base.ClassFieldAccessorFactory;
 import org.jboss.jandex.AnnotationInstance;
 import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.CompositeIndex;
@@ -62,12 +63,14 @@ import org.jboss.jandex.Indexer;
 import org.jboss.jandex.MethodInfo;
 import org.jbpm.util.JsonSchemaUtil;
 import org.kie.api.builder.model.KieModuleModel;
+import org.kie.api.pmml.PMML4Result;
 import org.kie.internal.kogito.codegen.Generated;
 import org.kie.internal.kogito.codegen.VariableInfo;
 import org.kie.kogito.Model;
 import org.kie.kogito.UserTask;
 import org.kie.kogito.codegen.AddonsConfig;
 import org.kie.kogito.codegen.ApplicationGenerator;
+import org.kie.kogito.codegen.DashboardGeneratedFileUtils;
 import org.kie.kogito.codegen.GeneratedFile;
 import org.kie.kogito.codegen.GeneratorContext;
 import org.kie.kogito.codegen.JsonSchemaGenerator;
@@ -79,8 +82,13 @@ import org.kie.kogito.codegen.prediction.PredictionCodegen;
 import org.kie.kogito.codegen.process.ProcessCodegen;
 import org.kie.kogito.codegen.process.persistence.PersistenceGenerator;
 import org.kie.kogito.codegen.rules.IncrementalRuleCodegen;
+import org.kie.pmml.evaluator.core.executor.PMMLModelEvaluator;
+import org.kie.pmml.evaluator.core.executor.PMMLModelEvaluatorFinder;
+import org.kie.pmml.evaluator.core.executor.PMMLModelEvaluatorFinderImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static java.util.stream.Collectors.toList;
 
 /**
  * Main class of the Kogito extension
@@ -104,6 +112,12 @@ public class KogitoAssetsProcessor {
     private static final DotName persistenceFactoryClass = DotName.createSimple("org.kie.kogito.persistence.KogitoProcessInstancesFactory");
     private static final DotName metricsClass = DotName.createSimple("org.kie.kogito.monitoring.rest.MetricsResource");
     private static final DotName tracingClass = DotName.createSimple("org.kie.kogito.tracing.decision.DecisionTracingListener");
+    private static final DotName knativeEventingClass = DotName.createSimple("org.kie.kogito.events.knative.ce.extensions.KogitoProcessExtension");
+    private static final DotName dmnJpmmlClass = DotName.createSimple( "org.kie.dmn.jpmml.DMNjPMMLInvocationEvaluator");
+    private static final DotName quarkusCloudEvents = DotName.createSimple("org.kie.kogito.addon.cloudevents.quarkus.QuarkusCloudEventEmitter");
+    private static final DotName quarkusSVGService = DotName.createSimple("org.kie.kogito.svg.service.QuarkusProcessSvgService");
+
+    private static final PathMatcher svgFileMatcher = FileSystems.getDefault().getPathMatcher("glob:**.svg");
 
     @Inject
     ArchiveRootBuildItem root;
@@ -147,17 +161,20 @@ public class KogitoAssetsProcessor {
         AppPaths appPaths = new AppPaths(root.getPaths());
 
         // enable addons looking at available classes
-        boolean usePersistence = combinedIndexBuildItem.getIndex()
-                .getClassByName(persistenceFactoryClass) != null;
-        boolean useMonitoring = combinedIndexBuildItem.getIndex()
-                .getClassByName(metricsClass) != null;
-        boolean useTracing = !combinedIndexBuildItem.getIndex()
-                .getAllKnownSubclasses(tracingClass).isEmpty();
+        boolean usePersistence = combinedIndexBuildItem.getIndex().getClassByName(persistenceFactoryClass) != null;
+        boolean useMonitoring = combinedIndexBuildItem.getIndex().getClassByName(metricsClass) != null;
+        boolean useTracing = !combinedIndexBuildItem.getIndex().getAllKnownSubclasses(tracingClass).isEmpty();
+        boolean useKnativeEventing = combinedIndexBuildItem.getIndex().getClassByName(knativeEventingClass) != null;
+        boolean isJPMMLAvailable = combinedIndexBuildItem.getIndex().getClassByName(dmnJpmmlClass) != null;
+        boolean useCloudEvents = combinedIndexBuildItem.getIndex().getClassByName(quarkusCloudEvents) != null;
+        boolean useProcessSVG = combinedIndexBuildItem.getIndex().getClassByName(quarkusSVGService) != null;
 
         AddonsConfig addonsConfig = new AddonsConfig()
                 .withPersistence(usePersistence)
                 .withMonitoring(useMonitoring)
-                .withTracing(useTracing);
+                .withTracing(useTracing)
+                .withKnativeEventing(useKnativeEventing)
+                .withCloudEvents(useCloudEvents);
 
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
         GeneratorContext context = buildContext(appPaths, combinedIndexBuildItem.getIndex());
@@ -185,7 +202,7 @@ public class KogitoAssetsProcessor {
                 .withAddons(addonsConfig)
                 .withClassLoader(classLoader);
 
-        appGen.withGenerator(PredictionCodegen.ofCollectedResources(CollectedResource.fromPaths(paths)))
+        appGen.withGenerator(PredictionCodegen.ofCollectedResources(isJPMMLAvailable, CollectedResource.fromPaths(paths)))
                 .withAddons(addonsConfig);
 
         appGen.withGenerator(DecisionCodegen.ofCollectedResources(CollectedResource.fromPaths(paths)))
@@ -194,6 +211,9 @@ public class KogitoAssetsProcessor {
 
         // real work occurs here: invoke the code-generation procedure
         Collection<GeneratedFile> generatedFiles = appGen.generate();
+
+        Optional<GeneratedFile> dashboardsListFile = DashboardGeneratedFileUtils.list(generatedFiles);
+        dashboardsListFile.ifPresent(generatedFiles::add);
 
         // dump files to disk
         for (Path projectPath : appPaths.projectPaths) {
@@ -216,11 +236,30 @@ public class KogitoAssetsProcessor {
         }
 
         // further processing
-        generatePersistenceInfo(appPaths, index);
+        Collection<GeneratedFile> persistenceGeneratedFiles = generatePersistenceInfo(appPaths, index);
+        generatedFiles.addAll(persistenceGeneratedFiles);
+
+        // Write files to disk
+        dumpFilesToDisk(appPaths, generatedFiles);
+
+        // register resources to the Quarkus environment
+        registerResources(generatedFiles);
 
         registerDataEventsForReflection(index);
 
         writeJsonSchema(appPaths, index);
+
+        if (useProcessSVG) {
+            registerProcessSVG(appPaths);
+        }
+    }
+
+    private void dumpFilesToDisk(AppPaths appPaths, Collection<GeneratedFile> generatedFiles){
+        for (Path projectPath : appPaths.projectPaths) {
+            generatedFileWriterBuilder
+                    .build(projectPath)
+                    .writeAll(generatedFiles);
+        }
     }
 
     private void registerResources(Collection<GeneratedFile> generatedFiles) {
@@ -241,7 +280,7 @@ public class KogitoAssetsProcessor {
         Collection<GeneratedFile> javaFiles =
                 generatedFiles.stream()
                         .filter(f -> f.relativePath().endsWith(".java"))
-                        .collect(Collectors.toList());
+                        .collect(toList());
 
         if (javaFiles.isEmpty()) {
             return null;
@@ -258,7 +297,7 @@ public class KogitoAssetsProcessor {
         return indexBuildItems(generatedBeanBuildItems);
     }
 
-    private void generatePersistenceInfo(AppPaths appPaths, IndexView inputIndex) throws IOException {
+    private Collection<GeneratedFile> generatePersistenceInfo(AppPaths appPaths, IndexView inputIndex) throws IOException {
 
         CompositeIndex index = CompositeIndex.create(combinedIndexBuildItem.getIndex(), inputIndex);
 
@@ -270,19 +309,26 @@ public class KogitoAssetsProcessor {
         if (usePersistence) {
             for (MethodInfo mi : persistenceClass.methods()) {
                 if (mi.name().equals("<init>") && !mi.parameters().isEmpty()) {
-                    parameters = mi.parameters().stream().map(p -> p.name().toString()).collect(Collectors.toList());
+                    parameters = mi.parameters().stream().map(p -> p.name().toString()).collect(toList());
                     break;
                 }
             }
         }
         GeneratorContext context = buildContext(appPaths, index);
         String persistenceType = context.getApplicationProperty("kogito.persistence.type").orElse(PersistenceGenerator.DEFAULT_PERSISTENCE_TYPE);
-        Collection<GeneratedFile> generatedFiles = getGeneratedPersistenceFiles(appPaths, index, usePersistence, parameters, context, persistenceType);
+        Collection<GeneratedFile> persistenceGeneratedFiles = getGeneratedPersistenceFiles(appPaths, index, usePersistence, parameters, context, persistenceType);
 
-        if (!generatedFiles.isEmpty()) {
+        if(persistenceGeneratedFiles.stream().anyMatch(x -> !GeneratedFile.Type.CLASS.equals(x.getType()) && !GeneratedFile.Type.GENERATED_CP_RESOURCE.equals(x.getType()))) {
+            throw new IllegalStateException("Only type CLASS and GENERATED_CP_RESOURCE expected here");
+        }
+
+        Collection<GeneratedFile> persistenceClasses = persistenceGeneratedFiles.stream().filter(x -> x.getType().equals(GeneratedFile.Type.CLASS)).collect(toList());
+        Collection<GeneratedFile> persistenceProtoFiles = persistenceGeneratedFiles.stream().filter(x -> x.getType().equals(GeneratedFile.Type.GENERATED_CP_RESOURCE)).collect(toList());
+
+        if (!persistenceClasses.isEmpty()) {
             InMemoryCompiler inMemoryCompiler = new InMemoryCompiler(appPaths.classesPaths,
                                                                      curateOutcomeBuildItem.getEffectiveModel().getUserDependencies());
-            inMemoryCompiler.compile(generatedFiles);
+            inMemoryCompiler.compile(persistenceClasses);
             Collection<GeneratedBeanBuildItem> generatedBeanBuildItems = makeBuildItems(appPaths, inMemoryCompiler.getTargetFileSystem());
             generatedBeanBuildItems.forEach(generatedBeans::produce);
         }
@@ -295,6 +341,8 @@ public class KogitoAssetsProcessor {
             addInnerClasses(org.jbpm.marshalling.impl.JBPMMessages.class, reflectiveClass);
             reflectiveClass.produce(new ReflectiveClassBuildItem(true, true, "java.lang.String"));
         }
+
+        return persistenceProtoFiles;
     }
     
     private void addInnerClasses(Class<?> superClass, BuildProducer<ReflectiveClassBuildItem> reflectiveClass) {
@@ -396,8 +444,42 @@ public class KogitoAssetsProcessor {
     }
 
     @BuildStep
-    public RuntimeInitializedClassBuildItem runtimeInitializedClass() {
-        return new RuntimeInitializedClassBuildItem(ClassFieldAccessorFactory.class.getName());
+    public List<ReflectiveClassBuildItem> reflectivePredictions() {
+        logger.debug("reflectivePredictions()");
+        PMMLModelEvaluatorFinder pmmlModelEvaluatorFinder = new PMMLModelEvaluatorFinderImpl();
+        final List<PMMLModelEvaluator> pmmlEvaluators = pmmlModelEvaluatorFinder.getImplementations(false);
+        logger.debug("pmmlEvaluators {}", pmmlEvaluators.size());
+        final List<ReflectiveClassBuildItem> toReturn = new ArrayList<>();
+        toReturn.add(new ReflectiveClassBuildItem(true, true, PMML4Result.class));
+        pmmlEvaluators.
+                forEach(pmmlModelEvaluator -> toReturn.add(new ReflectiveClassBuildItem(true, true, pmmlModelEvaluator.getClass())));
+        logger.debug("toReturn {}", toReturn.size());
+        return toReturn;
+    }
+
+    @BuildStep
+    public NativeImageResourceBuildItem predictionSPI() {
+        logger.debug("predictionSPI()");
+        return new NativeImageResourceBuildItem("META-INF/services/org.kie.pmml.evaluator.core.executor.PMMLModelEvaluator");
+    }
+
+    @BuildStep
+    public ReflectiveClassBuildItem reflectionJobsManagement() {
+        return new ReflectiveClassBuildItem(true, true, "org.kie.kogito.jobs.api.Job");
+    }
+
+    private void registerProcessSVG(AppPaths appPaths) throws IOException {
+        Path relativePath = Paths.get("META-INF", "processSVG");
+        Path targetClasses = appPaths.getFirstProjectPath().resolve(targetClassesDir);
+
+        //batik
+        resource.produce(new NativeImageResourceBuildItem("org/apache/batik/util/resources/XMLResourceDescriptor.properties"));
+
+        Path resolvedPath = targetClasses.resolve(relativePath);
+        try (Stream<Path> filePathFound = Files.find(resolvedPath, Integer.MAX_VALUE, (filePath, attrs) -> svgFileMatcher.matches(filePath))) {
+            List<String> svgs = filePathFound.map(svgPath -> targetClasses.relativize(svgPath).toString()).collect(toList());
+            resource.produce(new NativeImageResourceBuildItem(svgs));
+        }
     }
 
     private void writeJsonSchema(AppPaths appPaths, Index index) throws IOException {
@@ -491,9 +573,9 @@ public class KogitoAssetsProcessor {
         for (Path resourcePath : appPaths.getResourcePaths()) {
             Path moduleXmlPath = resourcePath.resolve(KogitoKieModuleModelImpl.KMODULE_JAR_PATH);
             if (Files.exists(moduleXmlPath)) {
-                return KogitoKieModuleModelImpl.fromXML(
-                        new ByteArrayInputStream(
-                                Files.readAllBytes(moduleXmlPath)));
+                try (ByteArrayInputStream bais = new ByteArrayInputStream(Files.readAllBytes(moduleXmlPath))) {
+                    return KogitoKieModuleModelImpl.fromXML(bais);
+                }
             }
         }
 

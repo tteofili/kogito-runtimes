@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.kie.kogito</groupId>
     <artifactId>kogito-quarkus-parent</artifactId>
-    <version>1.0.0-SNAPSHOT</version>    
+    <version>2.0.0-SNAPSHOT</version>    
   </parent>
 
   <artifactId>kogito-quarkus</artifactId>
@@ -47,6 +47,13 @@
       <artifactId>arc-processor</artifactId>
     </dependency>
 
+    <!-- Undertow is needed so that the static resource serving can correctly locate CP resources from `META-INF/resources` of the application, as it would be normally expected.
+         See https://issues.redhat.com/browse/KOGITO-3477 -->
+    <dependency>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-undertow</artifactId>
+    </dependency>
+
     <!-- kogito -->
     <dependency>
       <groupId>org.kie.kogito</groupId>
@@ -81,6 +88,10 @@
     <dependency>
       <groupId>org.kie.kogito</groupId>
       <artifactId>kogito-pmml</artifactId>
+    </dependency>
+     <dependency>
+      <groupId>com.jayway.jsonpath</groupId>
+      <artifactId>json-path</artifactId>
     </dependency>
   </dependencies>
 

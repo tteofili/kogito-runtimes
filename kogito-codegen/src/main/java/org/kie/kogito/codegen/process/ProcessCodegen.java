@@ -17,30 +17,20 @@ package org.kie.kogito.codegen.process;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.UncheckedIOException;
+import java.io.Reader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
-import org.drools.core.io.impl.ByteArrayResource;
 import org.drools.core.io.impl.FileSystemResource;
-import org.drools.core.io.internal.InternalResource;
 import org.drools.core.util.StringUtils;
 import org.drools.core.xml.SemanticModules;
 import org.jbpm.bpmn2.xml.BPMNDISemanticModule;
@@ -56,7 +46,6 @@ import org.jbpm.serverless.workflow.parser.ServerlessWorkflowParser;
 import org.kie.api.definition.process.Process;
 import org.kie.api.definition.process.WorkflowProcess;
 import org.kie.api.io.Resource;
-import org.kie.api.io.ResourceType;
 import org.kie.kogito.codegen.AbstractGenerator;
 import org.kie.kogito.codegen.AddonsConfig;
 import org.kie.kogito.codegen.ApplicationGenerator;
@@ -71,15 +60,14 @@ import org.kie.kogito.codegen.io.CollectedResource;
 import org.kie.kogito.codegen.process.config.ProcessConfigGenerator;
 import org.kie.kogito.codegen.process.events.CloudEventsMessageProducerGenerator;
 import org.kie.kogito.codegen.process.events.CloudEventsResourceGenerator;
-import org.kie.kogito.codegen.rules.IncrementalRuleCodegen;
+import org.kie.kogito.codegen.process.events.TopicsInformationResourceGenerator;
 import org.kie.kogito.rules.units.UndefinedGeneratedRuleUnitVariable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.SAXException;
 
+import static java.lang.String.format;
 import static java.util.stream.Collectors.toList;
-import static org.drools.core.util.IoUtils.readBytesFromInputStream;
-import static org.kie.api.io.ResourceType.determineResourceType;
 import static org.kie.kogito.codegen.ApplicationGenerator.log;
 
 /**
@@ -129,69 +117,6 @@ public class ProcessCodegen extends AbstractGenerator {
         return ofProcesses(processes);
     }
 
-    public static ProcessCodegen ofJar(Path... jarPaths) {
-        List<Process> processes = new ArrayList<>();
-
-        for (Path jarPath : jarPaths) {
-            try (ZipFile zipFile = new ZipFile(jarPath.toFile())) {
-                Enumeration<? extends ZipEntry> entries = zipFile.entries();
-                while (entries.hasMoreElements()) {
-                    ZipEntry entry = entries.nextElement();
-                    ResourceType resourceType = determineResourceType(entry.getName());
-                    if (SUPPORTED_BPMN_EXTENSIONS.stream().anyMatch(entry.getName()::endsWith)) {
-                        InternalResource resource = makeResourceFromZipEntry(zipFile, entry, resourceType);
-                        processes.addAll(parseProcessFile(resource));
-                    } else {
-                        SUPPORTED_SW_EXTENSIONS.entrySet()
-                                .stream()
-                                .filter(e -> entry.getName().endsWith(e.getKey()))
-                                .forEach(e -> {
-                                    InternalResource r = makeResourceFromZipEntry(zipFile, entry, resourceType);
-                                    processes.add(parseWorkflowFile(r, e.getValue()));
-                                });
-                    }
-                }
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-        }
-
-        return ofProcesses(processes);
-    }
-
-    private static InternalResource makeResourceFromZipEntry(ZipFile zipFile, ZipEntry entry, ResourceType resourceType) {
-        try {
-            InternalResource resource = null;
-            resource = new ByteArrayResource(readBytesFromInputStream(zipFile.getInputStream(entry)));
-            resource.setResourceType(resourceType);
-            resource.setSourcePath(entry.getName());
-            return resource;
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    public static ProcessCodegen ofPath(Path... paths) throws IOException {
-        List<Process> allProcesses = new ArrayList<>();
-        for (Path path : paths) {
-            Path srcPath = Paths.get( path.toString() );
-            try (Stream<Path> filesStream = Files.walk( srcPath )) {
-                List<File> files = filesStream
-                        .filter( p -> SUPPORTED_BPMN_EXTENSIONS.stream().anyMatch( p.toString()::endsWith ) ||
-                                SUPPORTED_SW_EXTENSIONS.keySet().stream().anyMatch( p.toString()::endsWith ) )
-                        .map( Path::toFile )
-                        .collect( Collectors.toList() );
-                allProcesses.addAll( parseProcesses(files) );
-            }
-        }
-        return ofProcesses(allProcesses);
-    }
-
-    public static ProcessCodegen ofFiles(Collection<File> processFiles) {
-        List<Process> allProcesses = parseProcesses(processFiles);
-        return ofProcesses(allProcesses);
-    }
-
     private static ProcessCodegen ofProcesses(List<Process> processes) {
         return new ProcessCodegen(processes);
     }
@@ -220,22 +145,26 @@ public class ProcessCodegen extends AbstractGenerator {
     }
 
     private static Process parseWorkflowFile(Resource r, String parser) {
-        try {
+        try (Reader reader = r.getReader()) {
             ServerlessWorkflowParser workflowParser = new ServerlessWorkflowParser(parser);
-            return workflowParser.parseWorkFlow(r.getReader());
+            return workflowParser.parseWorkFlow(reader);
         } catch (IOException e) {
             throw new ProcessParsingException("Could not parse file " + r.getSourcePath(), e);
+        } catch (RuntimeException e) {
+            throw new ProcessCodegenException(r.getSourcePath(), e);
         }
     }
 
-    private static Collection<? extends Process> parseProcessFile(Resource r) {
-        try {
+    private static Collection<Process> parseProcessFile(Resource r) {
+        try (Reader reader = r.getReader()) {
             XmlProcessReader xmlReader = new XmlProcessReader(
                     BPMN_SEMANTIC_MODULES,
                     Thread.currentThread().getContextClassLoader());
-            return xmlReader.read(r.getReader());
+            return xmlReader.read(reader);
         } catch (SAXException | IOException e) {
             throw new ProcessParsingException("Could not parse file " + r.getSourcePath(), e);
+        } catch (RuntimeException e) {
+            throw new ProcessCodegenException(r.getSourcePath(), e);
         }
     }
 
@@ -252,6 +181,9 @@ public class ProcessCodegen extends AbstractGenerator {
     public ProcessCodegen(Collection<? extends Process> processes) {
         this.processes = new HashMap<>();
         for (Process process : processes) {
+            if (this.processes.containsKey(process.getId())) {
+                throw new ProcessCodegenException(format("Duplicated process with id %s found in the project, please review .bpmn files", process.getId()));
+            }
             this.processes.put(process.getId(), (WorkflowProcess) process);
         }
 
@@ -523,6 +455,10 @@ public class ProcessCodegen extends AbstractGenerator {
             storeFile(Type.REST, ceGenerator.generatedFilePath(), ceGenerator.generate());
         }
 
+        final TopicsInformationResourceGenerator topicsGenerator =
+                new TopicsInformationResourceGenerator(processExecutableModelGenerators, annotator, addonsConfig);
+        storeFile(Type.REST, topicsGenerator.generatedFilePath(), topicsGenerator.generate());
+
         for (ProcessInstanceGenerator pi : pis) {
             storeFile(Type.PROCESS_INSTANCE, pi.generatedFilePath(), pi.generate());
         }
@@ -540,8 +476,7 @@ public class ProcessCodegen extends AbstractGenerator {
     @Override
     public void updateConfig(ConfigGenerator cfg) {
         if (!processes.isEmpty()) {
-            cfg.withProcessConfig(
-                    new ProcessConfigGenerator(packageName));
+            cfg.withProcessConfig(new ProcessConfigGenerator(packageName));
         }
     }
 

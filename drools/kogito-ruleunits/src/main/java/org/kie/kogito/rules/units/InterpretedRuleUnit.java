@@ -1,3 +1,17 @@
+/*
+ * Copyright 2020 Red Hat, Inc. and/or its affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.kie.kogito.rules.units;
 
 import java.io.InputStream;
@@ -10,7 +24,6 @@ import org.kie.api.io.ResourceType;
 import org.kie.api.runtime.KieSession;
 import org.kie.internal.builder.KnowledgeBuilder;
 import org.kie.kogito.Config;
-import org.kie.kogito.rules.KieRuntimeBuilder;
 import org.kie.kogito.rules.RuleUnit;
 import org.kie.kogito.rules.RuleUnitData;
 import org.kie.kogito.rules.RuleUnitInstance;
@@ -24,11 +37,11 @@ import org.kie.kogito.uow.UnitOfWorkManager;
 public class InterpretedRuleUnit<T extends RuleUnitData> extends AbstractRuleUnit<T> {
 
     public static <T extends RuleUnitData> RuleUnit<T> of(Class<T> type) {
-        return new InterpretedRuleUnit<>();
+        return new InterpretedRuleUnit<>(type.getCanonicalName());
     }
 
-    private InterpretedRuleUnit() {
-        super(DummyApplication.INSTANCE);
+    private InterpretedRuleUnit(String id) {
+        super(id, DummyApplication.INSTANCE);
     }
 
     @Override
@@ -71,11 +84,6 @@ public class InterpretedRuleUnit<T extends RuleUnitData> extends AbstractRuleUni
         public class RuleUnits extends AbstractRuleUnits {
             @Override
             protected RuleUnit<?> create( String fqcn ) {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public KieRuntimeBuilder ruleRuntimeBuilder() {
                 throw new UnsupportedOperationException();
             }
         }

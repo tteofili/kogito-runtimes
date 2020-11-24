@@ -5,12 +5,16 @@
   <parent>
     <artifactId>tracing</artifactId>
     <groupId>org.kie.kogito</groupId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>2.0.0-SNAPSHOT</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
   <artifactId>tracing-decision-api</artifactId>
   <name>Kogito :: Add-Ons :: Tracing :: API</name>
+
+  <properties>
+    <version.org.mockito>3.4.6</version.org.mockito>
+  </properties>
 
   <dependencies>
     <dependency>
@@ -26,6 +30,10 @@
       <artifactId>cloudevents-api</artifactId>
     </dependency>
     <dependency>
+      <groupId>io.cloudevents</groupId>
+      <artifactId>cloudevents-json-jackson</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
     </dependency>
@@ -37,7 +45,13 @@
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
-      <artifactId>mockito-core</artifactId>
+      <artifactId>mockito-inline</artifactId>
+      <version>${version.org.mockito}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

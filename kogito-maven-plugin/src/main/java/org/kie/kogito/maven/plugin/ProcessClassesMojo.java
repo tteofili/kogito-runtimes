@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -41,8 +42,8 @@ import org.drools.compiler.commons.jci.compilers.CompilationResult;
 import org.drools.compiler.commons.jci.compilers.JavaCompiler;
 import org.drools.compiler.commons.jci.compilers.JavaCompilerFactory;
 import org.drools.compiler.commons.jci.compilers.JavaCompilerSettings;
+import org.drools.compiler.compiler.JavaConfiguration;
 import org.drools.compiler.compiler.io.memory.MemoryFileSystem;
-import org.drools.compiler.rule.builder.dialect.java.JavaDialectConfiguration;
 import org.jbpm.util.JsonSchemaUtil;
 import org.kie.kogito.Model;
 import org.kie.kogito.UserTask;
@@ -63,7 +64,7 @@ import org.reflections.util.ConfigurationBuilder;
       threadSafe = true)
 public class ProcessClassesMojo extends AbstractKieMojo {
         
-    private static final JavaCompiler JAVA_COMPILER = JavaCompilerFactory.INSTANCE.loadCompiler(JavaDialectConfiguration.CompilerType.NATIVE, "1.8");
+    private static final JavaCompiler JAVA_COMPILER = JavaCompilerFactory.INSTANCE.loadCompiler( JavaConfiguration.CompilerType.NATIVE, "1.8");
 
 
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
@@ -77,7 +78,7 @@ public class ProcessClassesMojo extends AbstractKieMojo {
     private String schemaVersion;
 
     @Override
-    public void execute() throws MojoExecutionException, MojoFailureException {        
+    public void execute() throws MojoExecutionException {
         try {
             JavaCompilerSettings settings = new JavaCompilerSettings();
             List<URL> pathUrls = new ArrayList<>();
@@ -113,18 +114,17 @@ public class ProcessClassesMojo extends AbstractKieMojo {
                         parameters.add(t.getTypeName());
                     }
                 }
-                
+
                 GeneratorContext context = GeneratorContext.ofResourcePath(kieSourcesDirectory);
                 context.withBuildContext(discoverKogitoRuntimeContext(project));
-                
+
                 String persistenceType = context.getApplicationProperty("kogito.persistence.type").orElse(PersistenceGenerator.DEFAULT_PERSISTENCE_TYPE);
                 PersistenceGenerator persistenceGenerator = new PersistenceGenerator(new File(project.getBuild().getDirectory()), modelClasses, !classes.isEmpty(), new ReflectionProtoGenerator(), cl, parameters, persistenceType);
                 persistenceGenerator.setPackageName(appPackageName);
                 persistenceGenerator.setDependencyInjection(discoverDependencyInjectionAnnotator(project));
                 persistenceGenerator.setContext(context);
                 Collection<GeneratedFile> generatedFiles = persistenceGenerator.generate();
-
-
+                generatedFiles = generatedFiles.stream().filter(x -> x.getType().equals(GeneratedFile.Type.CLASS)).collect(Collectors.toList());
 
                 MemoryFileSystem srcMfs = new MemoryFileSystem();
                 MemoryFileSystem trgMfs = new MemoryFileSystem();
