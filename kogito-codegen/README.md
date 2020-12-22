@@ -9,8 +9,7 @@ configure its global behavior.
 
     ```java
     ApplicationGenerator appGen =
-            new ApplicationGenerator(appPackageName, targetDirectory)
-                    .withDependencyInjection(...)
+            new ApplicationGenerator(context, appPackageName, targetDirectory)
                     .withAddons(...);
     ```
 
@@ -22,11 +21,11 @@ configure its global behavior.
 - Each `Generator` may come with its own specific configuration
 
     ```java
-    appGen.withGenerator(RuleCodegen.ofPath(ruleSourceDirectory))
+    appGen.setupGenerator(RuleCodegen.ofPath(ruleSourceDirectory))
             .withKModule(getKModuleModel())
             .withClassLoader(...);
     
-    appGen.withGenerator(ProcessCodegen.ofPath(processSourceDirectory))                    
+    appGen.setupGenerator(ProcessCodegen.ofPath(processSourceDirectory))                    
             .withAddons(...);
     ```
 
@@ -53,8 +52,8 @@ The result of the processing is the main entry point `your.group.id.Application`
   it is possible to invoke some method such that an instance of C is returned.
   e.g.:
   
-   * for process P, one may write `new Application().processes().create("P")`
-   * for rule unit R, one may write `new Application().ruleUnits().create("R")`
+   * for process P, one may write `new Application().get(Processes.class).create("P")`
+   * for rule unit R, one may write `new Application().get(RuleUnits.class).create("R")`
   
   note: specific APIs may vary.
 

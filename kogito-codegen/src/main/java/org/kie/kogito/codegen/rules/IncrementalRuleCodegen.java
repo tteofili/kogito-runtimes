@@ -17,7 +17,6 @@ package org.kie.kogito.codegen.rules;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -27,9 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
-import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import com.github.javaparser.ast.CompilationUnit;
@@ -42,8 +38,6 @@ import org.drools.compiler.compiler.DecisionTableFactory;
 import org.drools.compiler.compiler.DroolsError;
 import org.drools.compiler.kproject.ReleaseIdImpl;
 import org.drools.compiler.kproject.models.KieModuleModelImpl;
-import org.drools.core.builder.conf.impl.DecisionTableConfigurationImpl;
-import org.drools.core.builder.conf.impl.ResourceConfigurationImpl;
 import org.drools.modelcompiler.builder.GeneratedFile;
 import org.drools.modelcompiler.builder.ModelBuilderImpl;
 import org.drools.modelcompiler.builder.ModelSourceClass;
@@ -58,19 +52,14 @@ import org.kie.api.io.ResourceType;
 import org.kie.api.runtime.conf.ClockTypeOption;
 import org.kie.internal.builder.CompositeKnowledgeBuilder;
 import org.kie.internal.builder.DecisionTableConfiguration;
-import org.kie.internal.builder.DecisionTableInputType;
-import org.kie.internal.builder.ResourceChangeSet;
-import org.kie.internal.builder.RuleTemplateConfiguration;
-import org.kie.internal.io.ResourceTypeImpl;
 import org.kie.internal.ruleunit.RuleUnitDescription;
 import org.kie.kogito.codegen.AbstractGenerator;
-import org.kie.kogito.codegen.AddonsConfig;
 import org.kie.kogito.codegen.ApplicationSection;
-import org.kie.kogito.codegen.ConfigGenerator;
+import org.kie.kogito.codegen.ApplicationConfigGenerator;
+import org.kie.kogito.codegen.DashboardGeneratedFileUtils;
 import org.kie.kogito.codegen.GeneratorContext;
 import org.kie.kogito.codegen.KogitoPackageSources;
-import org.kie.kogito.codegen.DashboardGeneratedFileUtils;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
+import org.kie.kogito.codegen.context.KogitoBuildContext;
 import org.kie.kogito.codegen.io.CollectedResource;
 import org.kie.kogito.codegen.rules.config.NamedRuleUnitConfig;
 import org.kie.kogito.codegen.rules.config.RuleConfigGenerator;
@@ -80,22 +69,26 @@ import org.kie.kogito.grafana.GrafanaConfigurationWriter;
 import org.kie.kogito.rules.RuleUnitConfig;
 import org.kie.kogito.rules.units.AssignableChecker;
 import org.kie.kogito.rules.units.ReflectiveRuleUnitDescription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static java.util.stream.Collectors.toList;
 
 import static com.github.javaparser.StaticJavaParser.parse;
+import static org.drools.compiler.kie.builder.impl.AbstractKieModule.addDTableToCompiler;
+import static org.drools.compiler.kie.builder.impl.AbstractKieModule.loadResourceConfiguration;
 import static org.drools.compiler.kie.builder.impl.KieBuilderImpl.setDefaultsforEmptyKieModule;
-import static org.kie.kogito.codegen.ApplicationGenerator.log;
-import static org.kie.kogito.codegen.ApplicationGenerator.logger;
 
 public class IncrementalRuleCodegen extends AbstractGenerator {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(IncrementalRuleCodegen.class);
+
     public static IncrementalRuleCodegen ofCollectedResources(Collection<CollectedResource> resources) {
-        List<Resource> dmnResources = resources.stream()
+        List<Resource> generatedRules = resources.stream()
                 .map(CollectedResource::resource)
                 .filter(r -> r.getResourceType() == ResourceType.DRL || r.getResourceType() == ResourceType.DTABLE || r.getResourceType() == ResourceType.PROPERTIES)
                 .collect(toList());
-        return ofResources(dmnResources);
+        return ofResources(generatedRules);
     }
 
     public static IncrementalRuleCodegen ofJavaResources(Collection<CollectedResource> resources) {
@@ -114,9 +107,8 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
 
     private static final String operationalDashboardDmnTemplate = "/grafana-dashboard-template/operational-dashboard-template.json";
     private final Collection<Resource> resources;
-    private RuleUnitContainerGenerator moduleGenerator;
+    private final List<RuleUnitGenerator> ruleUnitGenerators = new ArrayList<>();
 
-    private DependencyInjectionAnnotator annotator;
     /**
      * used for type-resolving during codegen/type-checking
      */
@@ -124,9 +116,7 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
 
     private KieModuleModel kieModuleModel;
     private boolean hotReloadMode = false;
-    private AddonsConfig addonsConfig = AddonsConfig.DEFAULT;
     private boolean useRestServices = true;
-    private String packageName = KnowledgeBuilderConfigurationImpl.DEFAULT_PACKAGE;
     private final boolean decisionTableSupported;
     private final Map<String, RuleUnitConfig> configs;
 
@@ -138,15 +128,7 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
         this.contextClassLoader = getClass().getClassLoader();
         this.decisionTableSupported = DecisionTableFactory.getDecisionTableProvider() != null;
         this.configs = new HashMap<>();
-    }
-
-    @Override
-    public void setPackageName(String packageName) {
-        this.packageName = packageName;
-    }
-
-    public void setDependencyInjection(DependencyInjectionAnnotator annotator) {
-        this.annotator = annotator;
+        setPackageName(KnowledgeBuilderConfigurationImpl.DEFAULT_PACKAGE);
     }
 
     @Override
@@ -160,18 +142,18 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
 
     @Override
     public ApplicationSection section() {
+        RuleUnitContainerGenerator moduleGenerator = new RuleUnitContainerGenerator(context.getBuildContext(), packageName);
+        ruleUnitGenerators.forEach(moduleGenerator::addRuleUnit);
         return moduleGenerator;
     }
 
+    @Override
     public List<org.kie.kogito.codegen.GeneratedFile> generate() {
         ReleaseIdImpl dummyReleaseId = new ReleaseIdImpl("dummy:dummy:0.0.0");
         if (!decisionTableSupported &&
                 resources.stream().anyMatch(r -> r.getResourceType() == ResourceType.DTABLE)) {
             throw new MissingDecisionTableDependencyError();
         }
-
-        moduleGenerator = new RuleUnitContainerGenerator(packageName);
-        moduleGenerator.withDependencyInjection(annotator);
 
         KnowledgeBuilderConfigurationImpl configuration =
                 new KogitoKnowledgeBuilderConfigurationImpl(contextClassLoader);
@@ -185,15 +167,15 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
             batch.build();
         } catch (RuntimeException e) {
             for (DroolsError error : modelBuilder.getErrors().getErrors()) {
-                logger.error(error.toString());
+                LOGGER.error(error.toString());
             }
-            logger.error(e.getMessage());
+            LOGGER.error(e.getMessage());
             throw new RuleCodegenError(e, modelBuilder.getErrors().getErrors());
         }
 
         if (modelBuilder.hasErrors()) {
             for (DroolsError error : modelBuilder.getErrors().getErrors()) {
-                logger.error(error.toString());
+                LOGGER.error(error.toString());
             }
             throw new RuleCodegenError(modelBuilder.getErrors().getErrors());
         }
@@ -214,7 +196,7 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
         if (hasRuleUnits) {
             generateRuleUnits( errors, generatedFiles );
         } else {
-            if (annotator != null && !hotReloadMode) {
+            if (context.getBuildContext().hasDI() && !hotReloadMode) {
                 generateSessionUnits( generatedFiles );
             }
             generateProject( dummyReleaseId, modelsByUnit, generatedFiles );
@@ -234,7 +216,6 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
         if (resource.getResourceType() == ResourceType.DTABLE) {
             Resource resourceProps = findPropertiesResource(resource);
             if (resourceProps != null) {
-                // TODO delete this method and use the one in AbstractKieModule when it will be available since drools 7.44
                 ResourceConfiguration conf = loadResourceConfiguration( resource.getSourcePath(), x -> true, x -> {
                     try {
                         return resourceProps.getInputStream();
@@ -243,7 +224,6 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
                     }
                 } );
                 if  (conf instanceof DecisionTableConfiguration ) {
-                    // TODO delete this method and use the one in AbstractKieModule when it will be available since drools 7.44
                     addDTableToCompiler( batch, resource, (( DecisionTableConfiguration ) conf) );
                     return;
                 }
@@ -273,13 +253,12 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
                 hasRuleUnits = true;
                 for (RuleUnitDescription ruleUnit : ruleUnits) {
                     String canonicalName = ruleUnit.getCanonicalName();
-                    RuleUnitGenerator ruSource = new RuleUnitGenerator(ruleUnit, pkgSources.getRulesFileName())
-                            .withDependencyInjection(annotator)
+                    RuleUnitGenerator ruSource = new RuleUnitGenerator(ruleUnit, pkgSources.getRulesFileName(), context.getBuildContext())
                             .withQueries(pkgSources.getQueriesInRuleUnit(canonicalName))
                             .withAddons(addonsConfig)
                             .mergeConfig(configs.get(canonicalName));
 
-                    moduleGenerator.addRuleUnit(ruSource);
+                    ruleUnitGenerators.add(ruSource);
                     unitsMap.put(canonicalName, ruSource.targetCanonicalName());
                     // only Class<?> has config for now
                     addUnitConfToKieModule(ruleUnit);
@@ -303,8 +282,9 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
                 modelSourceClass.generate()));
 
         ProjectSourceClass projectSourceClass = new ProjectSourceClass(modelSourceClass.getModelMethod());
-        if (annotator != null) {
-            projectSourceClass.withDependencyInjection("@" + annotator.applicationComponentType());
+        KogitoBuildContext buildContext = context.getBuildContext();
+        if (buildContext.hasDI()) {
+            projectSourceClass.withDependencyInjection("@" + buildContext.getDependencyInjectionAnnotator().applicationComponentType());
         }
 
         generatedFiles.add(new org.kie.kogito.codegen.GeneratedFile(
@@ -316,12 +296,13 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
     private void generateRuleUnits( List<DroolsError> errors, List<org.kie.kogito.codegen.GeneratedFile> generatedFiles ) {
         RuleUnitHelper ruleUnitHelper = new RuleUnitHelper();
 
-        if (annotator != null) {
+        if (context.getBuildContext().hasDI()) {
             generatedFiles.add( new org.kie.kogito.codegen.GeneratedFile( org.kie.kogito.codegen.GeneratedFile.Type.JSON_MAPPER,
-                    packageName.replace('.', '/') + "/KogitoObjectMapper.java", annotator.objectMapperInjectorSource(packageName) ) );
+                    packageName.replace('.', '/') + "/KogitoObjectMapper.java",
+                    context.getBuildContext().getDependencyInjectionAnnotator().objectMapperInjectorSource(packageName) ) );
         }
 
-        for (RuleUnitGenerator ruleUnit : moduleGenerator.getRuleUnits()) {
+        for (RuleUnitGenerator ruleUnit : ruleUnitGenerators) {
             initRuleUnitHelper( ruleUnitHelper, ruleUnit.getRuleUnitDescription() );
 
             // add the label id of the rule unit with value set to `rules` as resource type
@@ -345,7 +326,7 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
             return Collections.emptyList();
         }
 
-        if (annotator == null) {
+        if (!context.getBuildContext().hasDI()) {
             generatedFiles.add( new RuleUnitDTOSourceClass( ruleUnit.getRuleUnitDescription(), ruleUnitHelper ).generateFile( org.kie.kogito.codegen.GeneratedFile.Type.DTO) );
         }
 
@@ -364,7 +345,7 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
     }
 
     private Optional<String> generateQueryEndpoint( List<DroolsError> errors, List<org.kie.kogito.codegen.GeneratedFile> generatedFiles, QueryEndpointGenerator query ) {
-        if (addonsConfig.useMonitoring()){
+        if (addonsConfig.usePrometheusMonitoring()){
             String dashboard = GrafanaConfigurationWriter.generateOperationalDashboard(operationalDashboardDmnTemplate, query.getEndpointName(), addonsConfig.useTracing());
             generatedFiles.addAll(DashboardGeneratedFileUtils.operational(dashboard, query.getEndpointName() + ".json"));
         }
@@ -385,16 +366,18 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
             for (String sessionName : kBaseModel.getKieSessionModels().keySet()) {
                 CompilationUnit cu = parse( getClass().getResourceAsStream( "/class-templates/SessionRuleUnitTemplate.java" ) );
                 ClassOrInterfaceDeclaration template = cu.findFirst( ClassOrInterfaceDeclaration.class ).get();
-                annotator.withNamedSingletonComponent(template, "$SessionName$");
+                context.getBuildContext().getDependencyInjectionAnnotator().withNamedSingletonComponent(template, "$SessionName$");
                 template.setName( "SessionRuleUnit_" + sessionName );
 
-                template.findAll( FieldDeclaration.class).stream().filter( fd -> fd.getVariable(0).getNameAsString().equals("runtimeBuilder")).forEach( fd -> annotator.withInjection(fd));
+                template.findAll( FieldDeclaration.class).stream()
+                        .filter( fd -> fd.getVariable(0).getNameAsString().equals("runtimeBuilder"))
+                        .forEach( fd -> context.getBuildContext().getDependencyInjectionAnnotator().withInjection(fd));
 
                 template.findAll( StringLiteralExpr.class ).forEach( s -> s.setString( s.getValue().replace( "$SessionName$", sessionName ) ) );
                 generatedFiles.add(new org.kie.kogito.codegen.GeneratedFile(
                         org.kie.kogito.codegen.GeneratedFile.Type.RULE,
                         "org/drools/project/model/SessionRuleUnit_" + sessionName + ".java",
-                        log( cu.toString() ) ));
+                        cu.toString() ));
             }
         }
     }
@@ -436,8 +419,8 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
     }
 
     @Override
-    public void updateConfig(ConfigGenerator cfg) {
-        cfg.withRuleConfig(new RuleConfigGenerator(packageName));
+    public void updateConfig(ApplicationConfigGenerator cfg) {
+        cfg.withRuleConfig(new RuleConfigGenerator(context().getBuildContext(), packageName));
     }
 
     public IncrementalRuleCodegen withKModule(KieModuleModel model) {
@@ -456,120 +439,8 @@ public class IncrementalRuleCodegen extends AbstractGenerator {
         return this;
     }
 
-    public IncrementalRuleCodegen withAddons(AddonsConfig addonsConfig) {
-        this.addonsConfig = addonsConfig;
-        return this;
-    }
-
     public IncrementalRuleCodegen withRestServices(boolean useRestServices) {
         this.useRestServices = useRestServices;
         return this;
-    }
-
-    // --- TODO all the code below can be deleted when the corresponging methods will be available in AbstractKieModule since drools 7.44
-
-    public static ResourceConfiguration loadResourceConfiguration( String fileName, Predicate<String> fileAvailable, Function<String, InputStream> fileProvider ) {
-        ResourceConfiguration conf;
-        Properties prop = new Properties();
-        if ( fileAvailable.test( fileName + ".properties") ) {
-            try ( InputStream input = fileProvider.apply( fileName + ".properties") ) {
-                prop.load(input);
-            } catch (IOException e) {
-                throw new RuntimeException(String.format("Error loading resource configuration from file: %s.properties", fileName ), e);
-            }
-        }
-        if (ResourceType.DTABLE.matchesExtension( fileName )) {
-            int lastDot = fileName.lastIndexOf( '.' );
-            if (lastDot >= 0 && fileName.length() > lastDot+1) {
-                String extension = fileName.substring( lastDot+1 );
-                Object confClass = prop.get( ResourceTypeImpl.KIE_RESOURCE_CONF_CLASS);
-                if (confClass == null || confClass.toString().equals( ResourceConfigurationImpl.class.getCanonicalName() )) {
-                    prop.setProperty( ResourceTypeImpl.KIE_RESOURCE_CONF_CLASS, DecisionTableConfigurationImpl.class.getName() );
-                }
-                prop.setProperty(DecisionTableConfigurationImpl.DROOLS_DT_TYPE, DecisionTableInputType.valueOf( extension.toUpperCase() ).toString());
-            }
-        }
-        conf = prop.isEmpty() ? null : ResourceTypeImpl.fromProperties(prop);
-        if (conf instanceof DecisionTableConfiguration && (( DecisionTableConfiguration ) conf).getWorksheetName() == null) {
-            (( DecisionTableConfiguration ) conf).setWorksheetName( prop.getProperty( "sheets" ) );
-        }
-        return conf;
-    }
-
-    public static void addDTableToCompiler( CompositeKnowledgeBuilder ckbuilder, Resource resource, DecisionTableConfiguration dtableConf ) {
-        addDTableToCompiler( ckbuilder, resource, dtableConf, null );
-    }
-
-    private static void addDTableToCompiler( CompositeKnowledgeBuilder ckbuilder, Resource resource, DecisionTableConfiguration dtableConf, ResourceChangeSet rcs ) {
-        String sheetNames = dtableConf.getWorksheetName();
-        if (sheetNames == null || sheetNames.indexOf( ',' ) < 0) {
-            ckbuilder.add( resource, ResourceType.DTABLE, dtableConf, rcs );
-        } else {
-            for (String sheetName : sheetNames.split( "\\," ) ) {
-                ckbuilder.add( resource, ResourceType.DTABLE, new DecisionTableConfigurationDelegate( dtableConf, sheetName), rcs );
-            }
-        }
-    }
-
-    static class DecisionTableConfigurationDelegate implements DecisionTableConfiguration {
-
-        private final DecisionTableConfiguration delegate;
-        private final String sheetName;
-
-        DecisionTableConfigurationDelegate( DecisionTableConfiguration delegate, String sheetName ) {
-            this.delegate = delegate;
-            this.sheetName = sheetName;
-        }
-
-        @Override
-        public void setInputType( DecisionTableInputType inputType ) {
-            delegate.setInputType( inputType );
-
-        }
-
-        @Override
-        public DecisionTableInputType getInputType() {
-            return delegate.getInputType();
-        }
-
-        @Override
-        public void setWorksheetName( String name ) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public String getWorksheetName() {
-            return sheetName;
-        }
-
-        @Override
-        public void addRuleTemplateConfiguration( Resource template, int row, int col ) {
-            delegate.addRuleTemplateConfiguration( template, row, col );
-        }
-
-        @Override
-        public List<RuleTemplateConfiguration> getRuleTemplateConfigurations() {
-            return delegate.getRuleTemplateConfigurations();
-        }
-
-        @Override
-        public boolean isTrimCell() {
-            return delegate.isTrimCell();
-        }
-
-        @Override
-        public void setTrimCell( boolean trimCell ) {
-            delegate.setTrimCell( trimCell );
-        }
-
-        @Override
-        public Properties toProperties() {
-            return delegate.toProperties();
-        }
-
-        @Override
-        public ResourceConfiguration fromProperties( Properties prop ) {
-            return delegate.fromProperties( prop );
-        }
     }
 }

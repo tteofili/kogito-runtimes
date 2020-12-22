@@ -48,37 +48,47 @@ import org.kie.internal.ruleunit.RuleUnitDescription;
 import org.kie.kogito.codegen.AddonsConfig;
 import org.kie.kogito.codegen.BodyDeclarationComparator;
 import org.kie.kogito.codegen.FileGenerator;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
+import org.kie.kogito.codegen.TemplatedGenerator;
+import org.kie.kogito.codegen.context.KogitoBuildContext;
 
-import static com.github.javaparser.StaticJavaParser.parse;
 import static com.github.javaparser.StaticJavaParser.parseClassOrInterfaceType;
 import static com.github.javaparser.StaticJavaParser.parseStatement;
 import static org.drools.modelcompiler.builder.generator.DrlxParseUtil.classNameToReferenceType;
 
 public class QueryEndpointGenerator implements FileGenerator {
 
+    public static final String RESOURCE_CDI = "/class-templates/rules/CdiRestQueryTemplate.java";
+    public static final String RESOURCE_SPRING = "/class-templates/rules/SpringRestQueryTemplate.java";
+    public static final String RESOURCE_DEFAULT = "/class-templates/rules/RestQueryTemplate.java";
+
     private final RuleUnitDescription ruleUnit;
     private final QueryModel query;
-    private final DependencyInjectionAnnotator annotator;
 
     private final String name;
+    private final KogitoBuildContext buildContext;
     private final String endpointName;
     private final String queryClassName;
     private final String targetCanonicalName;
     private final String generatedFilePath;
     private final AddonsConfig addonsConfig;
+    private final TemplatedGenerator generator;
 
-    public QueryEndpointGenerator(RuleUnitDescription ruleUnit, QueryModel query, DependencyInjectionAnnotator annotator, AddonsConfig addonsConfig) {
+    public QueryEndpointGenerator(RuleUnitDescription ruleUnit,
+                                  QueryModel query,
+                                  KogitoBuildContext buildContext,
+                                  AddonsConfig addonsConfig) {
         this.ruleUnit = ruleUnit;
         this.query = query;
         this.name = toCamelCase(query.getName());
+        this.buildContext = buildContext;
         this.endpointName = toKebabCase(name);
-        this.annotator = annotator;
 
         this.queryClassName = ruleUnit.getSimpleName() + "Query" + name;
         this.targetCanonicalName = queryClassName + "Endpoint";
         this.generatedFilePath = (query.getNamespace() + "." + targetCanonicalName).replace('.', '/') + ".java";
         this.addonsConfig = addonsConfig;
+        this.generator =
+                new TemplatedGenerator(buildContext, query.getNamespace(), targetCanonicalName, RESOURCE_CDI, RESOURCE_SPRING, RESOURCE_DEFAULT);
     }
 
     public QueryGenerator getQueryGenerator() {
@@ -125,8 +135,7 @@ public class QueryEndpointGenerator implements FileGenerator {
 
     @Override
     public String generate() {
-        CompilationUnit cu = parse(
-                this.getClass().getResourceAsStream("/class-templates/rules/RestQueryTemplate.java"));
+        CompilationUnit cu = generator.compilationUnitOrThrow("Could not create CompilationUnit");
         cu.setPackageDeclaration(query.getNamespace());
 
         ClassOrInterfaceDeclaration clazz = cu
@@ -140,9 +149,6 @@ public class QueryEndpointGenerator implements FileGenerator {
                 .getFieldByName("ruleUnit")
                 .orElseThrow(() -> new NoSuchElementException("ClassOrInterfaceDeclaration doesn't contain a field named ruleUnit!"));
         setUnitGeneric(ruleUnitDeclaration.getElementType());
-        if (annotator != null) {
-            annotator.withInjection(ruleUnitDeclaration);
-        }
 
         String returnType = getReturnType(clazz);
         generateConstructors(clazz);
@@ -165,7 +171,7 @@ public class QueryEndpointGenerator implements FileGenerator {
     }
 
     private void generateQueryMethods(CompilationUnit cu, ClassOrInterfaceDeclaration clazz, String returnType) {
-        boolean hasDI = annotator != null;
+        boolean hasDI = buildContext.hasDI();
         MethodDeclaration queryMethod = clazz.getMethodsByName("executeQuery").get(0);
         queryMethod.getParameter(0).setType(ruleUnit.getCanonicalName() + (hasDI ? "" : "DTO"));
         setGeneric(queryMethod.getType(), returnType);
@@ -205,14 +211,14 @@ public class QueryEndpointGenerator implements FileGenerator {
     }
 
     private void addMonitoringToResource(CompilationUnit cu, MethodDeclaration[] methods, String nameURL) {
-        cu.addImport(new ImportDeclaration(new Name("org.kie.kogito.monitoring.system.metrics.SystemMetricsCollector"), false, false));
+        cu.addImport(new ImportDeclaration(new Name("org.kie.kogito.monitoring.core.common.system.metrics.SystemMetricsCollector"), false, false));
 
         for (MethodDeclaration md : methods) {
             BlockStmt body = md.getBody().orElseThrow(() -> new NoSuchElementException("A method declaration doesn't contain a body!"));
             NodeList<Statement> statements = body.getStatements();
             ReturnStmt returnStmt = body.findFirst(ReturnStmt.class).orElseThrow(() -> new NoSuchElementException("A method declaration doesn't contain a return statement!"));
-            statements.addFirst(parseStatement("double startTime = System.nanoTime();"));
-            statements.addBefore(parseStatement("double endTime = System.nanoTime();"), returnStmt);
+            statements.addFirst(parseStatement("long startTime = System.nanoTime();"));
+            statements.addBefore(parseStatement("long endTime = System.nanoTime();"), returnStmt);
             statements.addBefore(parseStatement("SystemMetricsCollector.registerElapsedTimeSampleMetrics(\"" + nameURL + "\", endTime - startTime);"), returnStmt);
             md.setBody(wrapBodyAddingExceptionLogging(body, nameURL));
         }

@@ -23,7 +23,6 @@ import java.util.stream.Collectors;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.BodyDeclaration;
-import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.expr.Expression;
@@ -40,8 +39,7 @@ import com.github.javaparser.ast.type.UnknownType;
 import org.kie.kogito.codegen.AbstractApplicationSection;
 import org.kie.kogito.codegen.InvalidTemplateException;
 import org.kie.kogito.codegen.TemplatedGenerator;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
-import org.kie.kogito.process.Processes;
+import org.kie.kogito.codegen.context.KogitoBuildContext;
 
 import static com.github.javaparser.ast.NodeList.nodeList;
 
@@ -56,19 +54,18 @@ public class ProcessContainerGenerator extends AbstractApplicationSection {
     private final List<ProcessGenerator> processes;
     private final List<BodyDeclaration<?>> factoryMethods;
 
-    private DependencyInjectionAnnotator annotator;
-
     private BlockStmt byProcessIdBody = new BlockStmt();
     private BlockStmt processesBody = new BlockStmt();
     private final TemplatedGenerator templatedGenerator;
 
-    public ProcessContainerGenerator(String packageName) {
-        super(SECTION_CLASS_NAME, "processes", Processes.class);
+    public ProcessContainerGenerator(KogitoBuildContext buildContext, String packageName) {
+        super(buildContext, SECTION_CLASS_NAME);
         this.packageName = packageName;
         this.processes = new ArrayList<>();
         this.factoryMethods = new ArrayList<>();
 
         this.templatedGenerator = new TemplatedGenerator(
+                buildContext,
                 packageName,
                 SECTION_CLASS_NAME,
                 RESOURCE_CDI,
@@ -96,28 +93,17 @@ public class ProcessContainerGenerator extends AbstractApplicationSection {
         byProcessIdBody.addStatement(byProcessId);
     }
 
-    public ProcessContainerGenerator withDependencyInjection(DependencyInjectionAnnotator annotator) {
-        this.annotator = annotator;
-        this.templatedGenerator.withDependencyInjection(annotator);
-        return this;
-    }
-
     @Override
-    public ClassOrInterfaceDeclaration classDeclaration() {
-        CompilationUnit compilationUnit = templatedGenerator.compilationUnit()
-                .orElseThrow(() -> new IllegalArgumentException("Invalid Template: No CompilationUnit"));
+    public CompilationUnit compilationUnit() {
+        CompilationUnit compilationUnit = templatedGenerator.compilationUnitOrThrow("Invalid Template: No CompilationUnit");
 
         registerProcessesExplicitly(compilationUnit);
-        return compilationUnit.findFirst(ClassOrInterfaceDeclaration.class)
-                .orElseThrow(() -> new InvalidTemplateException(
-                        SECTION_CLASS_NAME,
-                        templatedGenerator.templatePath(),
-                        "Cannot find class definition"));
+        return compilationUnit;
     }
 
     private void registerProcessesExplicitly(CompilationUnit compilationUnit) {
         // only for non-DI cases
-        if (annotator == null) {
+        if (!buildContext.hasDI()) {
             setupProcessById(compilationUnit);
             setupProcessIds(compilationUnit);
         }

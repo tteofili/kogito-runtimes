@@ -27,27 +27,28 @@ import com.github.javaparser.ast.expr.StringLiteralExpr;
 import org.kie.dmn.feel.codegen.feel11.CodegenStringUtil;
 import org.kie.kogito.codegen.BodyDeclarationComparator;
 import org.kie.kogito.codegen.CodegenUtils;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
+import org.kie.kogito.codegen.TemplatedGenerator;
+import org.kie.kogito.codegen.context.KogitoBuildContext;
 import org.kie.pmml.commons.model.KiePMMLModel;
 
-import static com.github.javaparser.StaticJavaParser.parse;
 import static org.kie.pmml.commons.utils.KiePMMLModelUtils.getSanitizedClassName;
 
 public class PMMLRestResourceGenerator {
 
-    static final String TEMPLATE_JAVA = "/class-templates/PMMLRestResourceTemplate.java";
+    public static final String CDI_TEMPLATE = "/class-templates/PMMLRestResourceTemplate.java";
+    private static final String SPRING_TEMPLATE = "/class-templates/spring/SpringPMMLRestResourceTemplate.java";
 
-    private static final RuntimeException MODIFIED_TEMPLATE_EXCEPTION =
-            new RuntimeException("The template " + TEMPLATE_JAVA + " has been modified.");
     private final String nameURL;
     final String packageName;
     final String appCanonicalName;
-    DependencyInjectionAnnotator annotator;
     private final String resourceClazzName;
     private final String relativePath;
+    private final KogitoBuildContext buildContext;
     private final KiePMMLModel kiePMMLModel;
+    private final TemplatedGenerator generator;
 
-    public PMMLRestResourceGenerator(KiePMMLModel model, String appCanonicalName) {
+    public PMMLRestResourceGenerator(KogitoBuildContext buildContext, KiePMMLModel model, String appCanonicalName) {
+        this.buildContext = buildContext;
         this.kiePMMLModel = model;
         this.packageName = "org.kie.kogito." + CodegenStringUtil.escapeIdentifier(model.getClass().getPackage().getName());
         String classPrefix = getSanitizedClassName(model.getName());
@@ -55,11 +56,11 @@ public class PMMLRestResourceGenerator {
         this.appCanonicalName = appCanonicalName;
         this.resourceClazzName = classPrefix + "Resource";
         this.relativePath = packageName.replace(".", "/") + "/" + resourceClazzName + ".java";
+        this.generator = new TemplatedGenerator(buildContext, packageName, "DecisionRestResource",CDI_TEMPLATE, SPRING_TEMPLATE, CDI_TEMPLATE);
     }
 
     public String generate() {
-        CompilationUnit clazz = parse(this.getClass().getResourceAsStream(TEMPLATE_JAVA));
-        clazz.setPackageDeclaration(this.packageName);
+        CompilationUnit clazz = generator.compilationUnitOrThrow("Cannot generate Prediction REST Resource");
 
         ClassOrInterfaceDeclaration template = clazz
                 .findFirst(ClassOrInterfaceDeclaration.class)
@@ -68,16 +69,12 @@ public class PMMLRestResourceGenerator {
 
         template.setName(resourceClazzName);
 
-        try {
-            setPathValue(template);
-            setPredictionModelName(template);
-        } catch (Exception e) {
-            throw MODIFIED_TEMPLATE_EXCEPTION;
-        }
+        setPathValue(template);
+        setPredictionModelName(template);
 
-        if (useInjection()) {
+        if (buildContext.hasDI()) {
             template.findAll(FieldDeclaration.class,
-                             CodegenUtils::isApplicationField).forEach(fd -> annotator.withInjection(fd));
+                             CodegenUtils::isApplicationField).forEach(fd -> buildContext.getDependencyInjectionAnnotator().withInjection(fd));
         } else {
             template.findAll(FieldDeclaration.class,
                              CodegenUtils::isApplicationField).forEach(this::initializeApplicationField);
@@ -95,21 +92,12 @@ public class PMMLRestResourceGenerator {
         return this.kiePMMLModel;
     }
 
-    public PMMLRestResourceGenerator withDependencyInjection(DependencyInjectionAnnotator annotator) {
-        this.annotator = annotator;
-        return this;
-    }
-
     public String className() {
         return resourceClazzName;
     }
 
     public String generatedFilePath() {
         return relativePath;
-    }
-
-    protected boolean useInjection() {
-        return this.annotator != null;
     }
 
     void setPathValue(ClassOrInterfaceDeclaration template) {

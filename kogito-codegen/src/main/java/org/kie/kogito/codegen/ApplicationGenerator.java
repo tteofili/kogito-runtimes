@@ -20,7 +20,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Enumeration;
@@ -30,9 +29,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-import com.github.javaparser.ast.CompilationUnit;
 import org.drools.core.util.StringUtils;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
 import org.kie.kogito.codegen.metadata.Labeler;
 import org.kie.kogito.codegen.metadata.MetaDataWriter;
 import org.kie.kogito.codegen.metadata.PrometheusLabeler;
@@ -41,7 +38,7 @@ import org.slf4j.LoggerFactory;
 
 public class ApplicationGenerator {
 
-    public static final Logger logger = LoggerFactory.getLogger(ApplicationGenerator.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(ApplicationGenerator.class);
 
     public static final String DEFAULT_GROUP_ID = "org.kie.kogito";
     public static final String DEFAULT_PACKAGE_NAME = "org.kie.kogito.app";
@@ -50,25 +47,23 @@ public class ApplicationGenerator {
     private final String packageName;
     private final File targetDirectory;
 
-    private DependencyInjectionAnnotator annotator;
-
-    private boolean hasRuleUnits;
     private final ApplicationContainerGenerator applicationMainGenerator;
-    private ConfigGenerator configGenerator;
+    private ApplicationConfigGenerator configGenerator;
     private List<Generator> generators = new ArrayList<>();
     private Map<Class, Labeler> labelers = new HashMap<>();
 
     private GeneratorContext context;
     private ClassLoader classLoader;
+    private AddonsConfig addonsConfig = AddonsConfig.DEFAULT;
 
-    public ApplicationGenerator(String packageName, File targetDirectory) {
-
+    public ApplicationGenerator(GeneratorContext context, String packageName, File targetDirectory) {
+        this.context = context;
         this.packageName = packageName;
         this.targetDirectory = targetDirectory;
         this.classLoader = Thread.currentThread().getContextClassLoader();
-        this.applicationMainGenerator = new ApplicationContainerGenerator(packageName);
+        this.applicationMainGenerator = new ApplicationContainerGenerator(context.getBuildContext(), packageName);
 
-        this.configGenerator = new ConfigGenerator(packageName);
+        this.configGenerator = new ApplicationConfigGenerator(context.getBuildContext(), packageName);
         this.configGenerator.withAddons(loadAddonList());
     }
 
@@ -80,27 +75,11 @@ public class ApplicationGenerator {
         return (this.packageName + "." + className).replace('.', '/') + ".java";
     }
 
-    public ApplicationGenerator withDependencyInjection(DependencyInjectionAnnotator annotator) {
-        this.annotator = annotator;
-        this.applicationMainGenerator.withDependencyInjection(annotator);
-        this.configGenerator.withDependencyInjection(annotator);
-        return this;
-    }
-
-    public ApplicationGenerator withGeneratorContext(GeneratorContext context) {
-        this.context = context;
-        return this;
-    }
-
-    public ApplicationGenerator withRuleUnits(boolean hasRuleUnits) {
-        this.hasRuleUnits = hasRuleUnits;
-        return this;
-    }
-
     public ApplicationGenerator withAddons(AddonsConfig addonsConfig) {
-        if (addonsConfig.useMonitoring()) {
+        if (addonsConfig.usePrometheusMonitoring()) {
             this.labelers.put(PrometheusLabeler.class, new PrometheusLabeler());
         }
+        this.addonsConfig = addonsConfig;
         return this;
     }
 
@@ -116,6 +95,8 @@ public class ApplicationGenerator {
         generatedFiles.addAll(configGenerator.generate());
 
         this.labelers.values().forEach(l -> MetaDataWriter.writeLabelsImageMetadata(targetDirectory, l.generateLabels()));
+        logGeneratedFiles(generatedFiles);
+
         return generatedFiles;
     }
 
@@ -133,10 +114,7 @@ public class ApplicationGenerator {
                 .collect(Collectors.toList());
 
         applicationMainGenerator.withSections(sections);
-        CompilationUnit compilationUnit = applicationMainGenerator.getCompilationUnitOrThrow();
-        return new GeneratedFile(GeneratedFile.Type.APPLICATION,
-                                 applicationMainGenerator.generatedFilePath(),
-                                 log(compilationUnit.toString()).getBytes(StandardCharsets.UTF_8));
+        return applicationMainGenerator.generate();
     }
 
     private List<GeneratedFile> generateApplicationSections() {
@@ -147,41 +125,27 @@ public class ApplicationGenerator {
             if (section == null) {
                 continue;
             }
-            CompilationUnit sectionUnit = new CompilationUnit();
-            sectionUnit.setPackageDeclaration(this.packageName);
-            sectionUnit.addType(section.classDeclaration());
             generatedFiles.add(
                     new GeneratedFile(GeneratedFile.Type.APPLICATION_SECTION,
                                       getFilePath(section.sectionClassName()),
-                                      sectionUnit.toString()));
+                                      section.compilationUnit().toString()));
         }
         return generatedFiles;
     }
 
-    public <G extends Generator> G withGenerator(G generator) {
+    /**
+     * Method to wire Generator with ApplicationGenerator and initialize it with common parameters
+     * @param generator
+     * @param <G>
+     * @return
+     */
+    public <G extends Generator> G setupGenerator(G generator) {
         this.generators.add(generator);
         generator.setPackageName(packageName);
-        generator.setDependencyInjection(annotator);
         generator.setProjectDirectory(targetDirectory.getParentFile().toPath());
         generator.setContext(context);
+        generator.setAddonsConfig(addonsConfig);
         return generator;
-    }
-
-    public static String log(String source) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("=====");
-            logger.debug(source);
-            logger.debug("=====");
-        }
-        return source;
-    }
-
-    public static void log(byte[] source) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("=====");
-            logger.debug(new String(source));
-            logger.debug("=====");
-        }
     }
 
     public ApplicationGenerator withClassLoader(ClassLoader classLoader) {
@@ -201,8 +165,21 @@ public class ApplicationGenerator {
                 }
             }
         } catch (IOException e) {
-            logger.warn("Unexpected exception during loading of kogito.addon files", e);
+            LOGGER.warn("Unexpected exception during loading of kogito.addon files", e);
         }
         return addons;
+    }
+
+    private void logGeneratedFiles(Collection<GeneratedFile> files) {
+        if (LOGGER.isDebugEnabled()) {
+            String separator = "=====";
+            for (GeneratedFile file : files) {
+                LOGGER.debug(separator);
+                LOGGER.debug("{}: {}", file.getType(), file.relativePath());
+                LOGGER.debug(separator);
+                LOGGER.debug(new String(file.contents()));
+                LOGGER.debug(separator);
+            }
+        }
     }
 }

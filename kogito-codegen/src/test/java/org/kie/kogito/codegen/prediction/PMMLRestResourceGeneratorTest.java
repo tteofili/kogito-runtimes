@@ -33,19 +33,18 @@ import org.drools.core.util.StringUtils;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.kie.dmn.feel.codegen.feel11.CodegenStringUtil;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
+import org.kie.kogito.codegen.context.JavaKogitoBuildContext;
+import org.kie.kogito.codegen.context.KogitoBuildContext;
+import org.kie.kogito.codegen.di.CDIDependencyInjectionAnnotator;
 import org.kie.pmml.commons.model.KiePMMLModel;
 
 import static com.github.javaparser.StaticJavaParser.parse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.kie.kogito.codegen.prediction.PMMLRestResourceGenerator.TEMPLATE_JAVA;
+import static org.kie.kogito.codegen.prediction.PMMLRestResourceGenerator.CDI_TEMPLATE;
 import static org.kie.pmml.commons.utils.KiePMMLModelUtils.getSanitizedClassName;
-import static org.mockito.Mockito.mock;
 
 class PMMLRestResourceGeneratorTest {
 
@@ -53,10 +52,12 @@ class PMMLRestResourceGeneratorTest {
     private final static KiePMMLModel KIE_PMML_MODEL = getKiePMMLModelInternal();
     private static PMMLRestResourceGenerator pmmlRestResourceGenerator;
     private static ClassOrInterfaceDeclaration template = getClassOrInterfaceDeclaration();
+    private static KogitoBuildContext buildContext;
 
     @BeforeAll
     public static void setup() {
-        pmmlRestResourceGenerator = new PMMLRestResourceGenerator(KIE_PMML_MODEL, APP_CANONICAL_NAME);
+        buildContext = new JavaKogitoBuildContext();
+        pmmlRestResourceGenerator = new PMMLRestResourceGenerator(buildContext, KIE_PMML_MODEL, APP_CANONICAL_NAME);
         assertNotNull(pmmlRestResourceGenerator);
     }
 
@@ -72,7 +73,7 @@ class PMMLRestResourceGeneratorTest {
     }
 
     private static ClassOrInterfaceDeclaration getClassOrInterfaceDeclaration() {
-        CompilationUnit clazz = parse(PMMLRestResourceGeneratorTest.class.getResourceAsStream(TEMPLATE_JAVA));
+        CompilationUnit clazz = parse(PMMLRestResourceGeneratorTest.class.getResourceAsStream(CDI_TEMPLATE));
         clazz.setPackageDeclaration(CodegenStringUtil.escapeIdentifier("IDENTIFIER"));
         return clazz
                 .findFirst(ClassOrInterfaceDeclaration.class)
@@ -88,7 +89,8 @@ class PMMLRestResourceGeneratorTest {
 
     @Test
     void generateWithDependencyInjection() {
-        String retrieved = pmmlRestResourceGenerator.withDependencyInjection(mock(DependencyInjectionAnnotator.class)).generate();
+        buildContext.setDependencyInjectionAnnotator(new CDIDependencyInjectionAnnotator());
+        String retrieved = pmmlRestResourceGenerator.generate();
         commonEvaluateGenerate(retrieved);
         String expected = "Application application;";
         assertTrue(retrieved.contains(expected));
@@ -96,7 +98,8 @@ class PMMLRestResourceGeneratorTest {
 
     @Test
     void generateWithoutDependencyInjection() {
-        String retrieved = pmmlRestResourceGenerator.withDependencyInjection(null).generate();
+        buildContext.setDependencyInjectionAnnotator(null);
+        String retrieved = pmmlRestResourceGenerator.generate();
         commonEvaluateGenerate(retrieved);
         String expected = String.format("Application application = new %s();", APP_CANONICAL_NAME);
         assertTrue(retrieved.contains(expected));
@@ -105,23 +108,13 @@ class PMMLRestResourceGeneratorTest {
     @Test
     void getNameURL() {
         String classPrefix = getSanitizedClassName(KIE_PMML_MODEL.getName());
-        String expected = URLEncoder.encode(classPrefix).replaceAll("\\+", "%20");
+        String expected = URLEncoder.encode(classPrefix).replaceAll("\\+", " ");
         assertEquals(expected, pmmlRestResourceGenerator.getNameURL());
     }
 
     @Test
     void getKiePMMLModel() {
         assertEquals(KIE_PMML_MODEL, pmmlRestResourceGenerator.getKiePMMLModel());
-    }
-
-    @Test
-    void withDependencyInjection() {
-        assertNull(pmmlRestResourceGenerator.annotator);
-        DependencyInjectionAnnotator dependencyInjectionAnnotator = mock(DependencyInjectionAnnotator.class);
-        PMMLRestResourceGenerator retrieved =
-                pmmlRestResourceGenerator.withDependencyInjection(dependencyInjectionAnnotator);
-        assertEquals(pmmlRestResourceGenerator, retrieved);
-        assertEquals(dependencyInjectionAnnotator, pmmlRestResourceGenerator.annotator);
     }
 
     @Test
@@ -141,14 +134,6 @@ class PMMLRestResourceGeneratorTest {
     }
 
     @Test
-    void useInjection() {
-        pmmlRestResourceGenerator.withDependencyInjection(null);
-        assertFalse(pmmlRestResourceGenerator.useInjection());
-        pmmlRestResourceGenerator.withDependencyInjection(mock(DependencyInjectionAnnotator.class));
-        assertTrue(pmmlRestResourceGenerator.useInjection());
-    }
-
-    @Test
     void setPathValue() {
         final Optional<SingleMemberAnnotationExpr> retrievedOpt = template.findFirst(SingleMemberAnnotationExpr.class);
         assertTrue(retrievedOpt.isPresent());
@@ -157,7 +142,7 @@ class PMMLRestResourceGeneratorTest {
         pmmlRestResourceGenerator.setPathValue(template);
         try {
             String classPrefix = getSanitizedClassName(KIE_PMML_MODEL.getName());
-            String expected = URLEncoder.encode(classPrefix).replaceAll("\\+", "%20");
+            String expected = URLEncoder.encode(classPrefix).replaceAll("\\+", " ");
             assertEquals(expected, retrieved.getMemberValue().asStringLiteralExpr().asString());
         } catch (Exception e) {
             fail(e);
@@ -194,8 +179,8 @@ class PMMLRestResourceGeneratorTest {
         expected = StringUtils.ucFirst(classPrefix) + "Resource";
         expected = String.format("public class %s {", expected);
         assertTrue(retrieved.contains(expected));
-        expected = String.format("org.kie.kogito.prediction.PredictionModel prediction = application.predictionModels" +
-                                         "().getPredictionModel(\"%s\");", KIE_PMML_MODEL.getName());
+        expected = String.format("org.kie.kogito.prediction.PredictionModel prediction = application" +
+                ".get(org.kie.kogito.prediction.PredictionModels.class).getPredictionModel(\"%s\");", KIE_PMML_MODEL.getName());
         assertTrue(retrieved.contains(expected));
     }
 

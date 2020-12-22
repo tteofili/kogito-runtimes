@@ -31,35 +31,31 @@ import com.github.javaparser.ast.stmt.BlockStmt;
 import org.jbpm.compiler.canonical.TriggerMetaData;
 import org.kie.kogito.codegen.AddonsConfig;
 import org.kie.kogito.codegen.BodyDeclarationComparator;
-import org.kie.kogito.codegen.di.DependencyInjectionAnnotator;
+import org.kie.kogito.codegen.TemplatedGenerator;
+import org.kie.kogito.codegen.context.KogitoBuildContext;
 import org.kie.kogito.codegen.process.ProcessExecutableModelGenerator;
 import org.kie.kogito.event.EventKind;
 import org.kie.kogito.services.event.DataEventAttrBuilder;
 
 public class TopicsInformationResourceGenerator extends AbstractEventResourceGenerator {
 
-    private static final String RESOURCE_TEMPLATE = "/class-templates/events/TopicsInformationResourceTemplate.java";
+    private static final String CDI_TEMPLATE = "/class-templates/events/TopicsInformationResourceTemplate.java";
+    private static final String SPRING_TEMPLATE = "/class-templates/events/SpringTopicsInformationResourceTemplate.java";
     private static final String CLASS_NAME = "TopicsInformationResource";
 
-    private final DependencyInjectionAnnotator annotator;
+    private final KogitoBuildContext buildContext;
     private final Map<String, List<TriggerMetaData>> triggers;
     private final AddonsConfig addonsConfig;
 
-    public TopicsInformationResourceGenerator(final List<ProcessExecutableModelGenerator> generators,
-                                              final DependencyInjectionAnnotator annotator,
+    public TopicsInformationResourceGenerator(final KogitoBuildContext buildContext,
+                                              final String packageName,
+                                              final List<ProcessExecutableModelGenerator> generators,
                                               final AddonsConfig addonsConfig) {
+        super(new TemplatedGenerator(buildContext, packageName, CLASS_NAME,
+                                     CDI_TEMPLATE, SPRING_TEMPLATE, CDI_TEMPLATE));
+        this.buildContext = buildContext;
         this.triggers = this.filterTriggers(generators);
-        this.annotator = annotator;
         this.addonsConfig = addonsConfig;
-    }
-
-    protected String getResourceTemplate() {
-        return RESOURCE_TEMPLATE;
-    }
-
-    @Override
-    protected String getClassName() {
-        return CLASS_NAME;
     }
 
     Map<String, List<TriggerMetaData>> getTriggers() {
@@ -67,18 +63,18 @@ public class TopicsInformationResourceGenerator extends AbstractEventResourceGen
     }
 
     public String generate() {
-        final CompilationUnit clazz = this.parseTemplate();
+        final CompilationUnit clazz = generator.compilationUnitOrThrow("Cannot generate TopicInformation REST Resource");
         final ClassOrInterfaceDeclaration template = clazz
                 .findFirst(ClassOrInterfaceDeclaration.class)
                 .orElseThrow(() -> new NoSuchElementException("Compilation unit doesn't contain a class or interface declaration!"));
-        template.setName(CLASS_NAME);
+
         this.addEventsMeta(template);
 
         // in case we don't have the bean in the classpath, just ignore the injection that the generated class will use NoOp instead
-        if (annotator != null && addonsConfig.useCloudEvents()) {
-            annotator.withApplicationComponent(template);
+        if (buildContext.hasDI() && addonsConfig.useCloudEvents()) {
+            buildContext.getDependencyInjectionAnnotator().withApplicationComponent(template);
             template.findAll(FieldDeclaration.class, fd -> fd.getVariables().get(0).getNameAsString().contains("discovery"))
-                    .forEach(annotator::withInjection);
+                    .forEach(buildContext.getDependencyInjectionAnnotator()::withInjection);
         } else {
             template.findFirst(MethodDeclaration.class, md -> md.getName().toString().equals("getTopics"))
                     .orElseThrow(() -> new NoSuchElementException("Compilation unit doesn't contain method getTopics!"))
